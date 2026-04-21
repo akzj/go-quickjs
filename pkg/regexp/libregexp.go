@@ -1,0 +1,1880 @@
+// Package regexp implements a regular expression engine compatible with JavaScript's RegExp.
+//
+// This is a port of QuickJS's libregexp.c to Go, maintaining exact behavioral compatibility.
+package regexp
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/akzj/go-quickjs/internal/cutils"
+	quickunicode "github.com/akzj/go-quickjs/pkg/unicode"
+)
+
+// ============================================================================
+// Constants and Flags
+// ============================================================================
+
+// Flags for regex compilation (matching JavaScript RegExp flags)
+const (
+	FlagGlobal      = 1 << 0
+	FlagIgnoreCase  = 1 << 1
+	FlagMultiline   = 1 << 2
+	FlagDotAll      = 1 << 3
+	FlagUnicode     = 1 << 4
+	FlagSticky      = 1 << 5
+	FlagIndices     = 1 << 6 // Unused by libregexp, just recorded.
+	FlagNamedGroups = 1 << 7 // Named groups are present in the regexp
+	FlagUnicodeSets = 1 << 8
+)
+
+// Return codes for lre_exec
+const (
+	RetMemoryError = -1
+	RetTimeout     = -2
+	RetNoMatch     = 0
+	RetMatch       = 1
+)
+
+// Group name trailer length including trailing '\0'
+const GroupNameTrailerLen = 2
+
+// Limits
+const (
+	CaptureCountMax      = 255
+	RegisterCountMax    = 255
+	InterruptCounterInit = 10000
+)
+
+// Unicode line terminators
+const (
+	CPLineSeparator       = 0x2028
+	CPParagraphSeparator  = 0x2029
+)
+
+// Temporary buffer size
+const TmpBufSize = 128
+
+// Character class base for encoding class types
+const ClassRangeBase = 0x40000000
+
+// ============================================================================
+// Opcodes (from libregexp-opcode.h)
+// ============================================================================
+
+// OpCode identifies bytecode operations
+type OpCode int
+
+const (
+	OpInvalid OpCode = iota
+	OpChar
+	OpCharI
+	OpChar32
+	OpChar32I
+	OpDot
+	OpAny
+	OpSpace
+	OpNotSpace
+	OpLineStart
+	OpLineStartM
+	OpLineEnd
+	OpLineEndM
+	OpGoto
+	OpSplitGotoFirst
+	OpSplitNextFirst
+	OpMatch
+	OpLookaheadMatch
+	OpNegativeLookaheadMatch
+	OpSaveStart
+	OpSaveEnd
+	OpSaveReset
+	OpLoop
+	OpLoopSplitGotoFirst
+	OpLoopSplitNextFirst
+	OpLoopCheckAdvSplitGotoFirst
+	OpLoopCheckAdvSplitNextFirst
+	OpSetI32
+	OpWordBoundary
+	OpWordBoundaryI
+	OpNotWordBoundary
+	OpNotWordBoundaryI
+	OpBackReference
+	OpBackReferenceI
+	OpBackwardBackReference
+	OpBackwardBackReferenceI
+	OpRange
+	OpRangeI
+	OpRange32
+	OpRange32I
+	OpLookahead
+	OpNegativeLookahead
+	OpSetCharPos
+	OpCheckAdvance
+	OpPrev
+	OpCount
+)
+
+// Opcode sizes
+var opcodeSize = [OpCount]int{
+	1,  // invalid
+	3,  // char
+	3,  // char_i
+	5,  // char32
+	5,  // char32_i
+	1,  // dot
+	1,  // any
+	1,  // space
+	1,  // not_space
+	1,  // line_start
+	1,  // line_start_m
+	1,  // line_end
+	1,  // line_end_m
+	5,  // goto
+	5,  // split_goto_first
+	5,  // split_next_first
+	1,  // match
+	1,  // lookahead_match
+	1,  // negative_lookahead_match
+	2,  // save_start
+	2,  // save_end
+	3,  // save_reset
+	6,  // loop
+	10, // loop_split_goto_first
+	10, // loop_split_next_first
+	10, // loop_check_adv_split_goto_first
+	10, // loop_check_adv_split_next_first
+	6,  // set_i32
+	1,  // word_boundary
+	1,  // word_boundary_i
+	1,  // not_word_boundary
+	1,  // not_word_boundary_i
+	2,  // back_reference
+	2,  // back_reference_i
+	2,  // backward_back_reference
+	2,  // backward_back_reference_i
+	3,  // range
+	3,  // range_i
+	3,  // range32
+	3,  // range32_i
+	5,  // lookahead
+	5,  // negative_lookahead
+	2,  // set_char_pos
+	2,  // check_advance
+	1,  // prev
+}
+
+// ============================================================================
+// Bytecode Header
+// ============================================================================
+
+const (
+	HeaderFlags          = 0
+	HeaderCaptureCount   = 2
+	HeaderRegisterCount  = 3
+	HeaderBytecodeLen    = 4
+	HeaderLen            = 8
+)
+
+// ============================================================================
+// Character Classes
+// ============================================================================
+
+// CharRangeClass represents predefined character classes
+type CharRangeClass int
+
+const (
+	CharRangeD CharRangeClass = iota
+	CharRangeS
+	CharRangeW
+)
+
+// Character class ranges - used for \d, \s, \w and their inverses
+var charRangeD = []uint16{
+	1,
+	0x0030, 0x0039 + 1, // 0-9
+}
+
+var charRangeS = []uint16{
+	10,
+	0x0009, 0x000D + 1,  // \t-\r
+	0x0020, 0x0020 + 1,  // space
+	0x00A0, 0x00A0 + 1,  // non-breaking space
+	0x1680, 0x1680 + 1,  // Ogham space mark
+	0x2000, 0x200A + 1,  // en quad through hair space
+	0x2028, 0x2029 + 1,  // line separator, paragraph separator
+	0x202F, 0x202F + 1,  // narrow no-break space
+	0x205F, 0x205F + 1,  // medium mathematical space
+	0x3000, 0x3000 + 1,  // ideographic space
+	0xFEFF, 0xFEFF + 1,  // zero width no-break space (BOM)
+}
+
+var charRangeW = []uint16{
+	4,
+	0x0030, 0x0039 + 1, // 0-9
+	0x0041, 0x005A + 1, // A-Z
+	0x005F, 0x005F + 1, // _
+	0x0061, 0x007A + 1, // a-z
+}
+
+// ============================================================================
+// Parse State
+// ============================================================================
+
+type parseState struct {
+	byteCode          byteBuffer
+	bufPtr            []byte
+	bufEnd            []byte
+	bufStart          []byte
+	reFlags           int
+	isUnicode         bool
+	unicodeSets       bool
+	ignoreCase        bool
+	multiLine         bool
+	dotAll            bool
+	groupNameScope    uint8
+	captureCount      int
+	totalCaptureCount int // -1 = not computed yet
+	hasNamedCaptures  int // -1 = don't know, 0 = no, 1 = yes
+	opaque            interface{}
+	groupNames        byteBuffer
+	tmpBuf            [TmpBufSize]byte
+	errorMsg          string
+}
+
+// ============================================================================
+// Byte Buffer (DynBuf equivalent)
+// ============================================================================
+
+type byteBuffer struct {
+	buf           []byte
+	size          int
+	allocatedSize int
+	error         bool
+}
+
+func (bb *byteBuffer) init() {
+	bb.buf = nil
+	bb.size = 0
+	bb.allocatedSize = 0
+	bb.error = false
+}
+
+func (bb *byteBuffer) putC(c byte) {
+	if bb.error {
+		return
+	}
+	if len(bb.buf)-bb.size < 1 {
+		if bb.claim(1) != 0 {
+			return
+		}
+	}
+	bb.buf[bb.size] = c
+	bb.size++
+}
+
+func (bb *byteBuffer) putU16(val uint16) {
+	if bb.error {
+		return
+	}
+	if len(bb.buf)-bb.size < 2 {
+		if bb.claim(2) != 0 {
+			return
+		}
+	}
+	cutils.PutU16(bb.buf[bb.size:], val)
+	bb.size += 2
+}
+
+func (bb *byteBuffer) putU32(val uint32) {
+	if bb.error {
+		return
+	}
+	if len(bb.buf)-bb.size < 4 {
+		if bb.claim(4) != 0 {
+			return
+		}
+	}
+	cutils.PutU32(bb.buf[bb.size:], val)
+	bb.size += 4
+}
+
+func (bb *byteBuffer) put(data []byte) {
+	if bb.error {
+		return
+	}
+	if len(bb.buf)-bb.size < len(data) {
+		if bb.claim(len(data)) != 0 {
+			return
+		}
+	}
+	copy(bb.buf[bb.size:], data)
+	bb.size += len(data)
+}
+
+func (bb *byteBuffer) claim(len int) int {
+	if bb.error {
+		return -1
+	}
+	newSize := bb.size + len
+	if newSize < bb.size {
+		bb.error = true
+		return -1
+	}
+	if newSize > bb.allocatedSize {
+		size := bb.allocatedSize + bb.allocatedSize/2
+		if size < bb.allocatedSize {
+			bb.error = true
+			return -1
+		}
+		if size < newSize {
+			size = newSize
+		}
+		newBuf := make([]byte, size)
+		if bb.buf != nil {
+			copy(newBuf, bb.buf)
+		}
+		bb.buf = newBuf
+		bb.allocatedSize = size
+	}
+	return 0
+}
+
+func (bb *byteBuffer) insert(pos, len int) int {
+	if bb.error {
+		return -1
+	}
+	newSize := bb.size + len
+	if newSize < bb.size {
+		bb.error = true
+		return -1
+	}
+	if newSize > bb.allocatedSize {
+		size := bb.allocatedSize + bb.allocatedSize/2
+		if size < bb.allocatedSize {
+			bb.error = true
+			return -1
+		}
+		if size < newSize {
+			size = newSize
+		}
+		newBuf := make([]byte, size)
+		if bb.buf != nil {
+			copy(newBuf, bb.buf)
+		}
+		bb.buf = newBuf
+		bb.allocatedSize = size
+	}
+	// Move existing data
+	copy(bb.buf[pos+len:], bb.buf[pos:])
+	bb.size = newSize
+	return 0
+}
+
+func (bb *byteBuffer) bytes() []byte {
+	return bb.buf[:bb.size]
+}
+
+func (bb *byteBuffer) len() int {
+	return bb.size
+}
+
+func (bb *byteBuffer) err() bool {
+	return bb.error
+}
+
+func (bb *byteBuffer) free() {
+	bb.buf = nil
+	bb.size = 0
+	bb.allocatedSize = 0
+	bb.error = false
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+// Compile compiles a regular expression pattern.
+// Returns the compiled bytecode and an error if compilation fails.
+func Compile(pattern string, flags int, opaque interface{}) ([]byte, error) {
+	var bc []byte
+	var errMsg string
+
+	bc, errMsg = lreCompile(pattern, flags, opaque)
+	if bc == nil {
+		return nil, errors.New(errMsg)
+	}
+	return bc, nil
+}
+
+// Match executes a compiled regex against input and returns match indices.
+// capture should be a slice of size 2 * captureCount.
+// Returns RetMatch (1) if matched, RetNoMatch (0) if no match, or < 0 on error.
+func Match(bc []byte, input []byte, cindex int, cbufType int, opaque interface{}, capture [][]byte) int {
+	if len(capture) < 2*GetCaptureCount(bc) {
+		return RetMemoryError
+	}
+	return lreExec(capture, bc, input, cindex, len(input), cbufType, opaque)
+}
+
+// GetCaptureCount returns the number of capture groups in the compiled regex.
+func GetCaptureCount(bc []byte) int {
+	return int(bc[HeaderCaptureCount])
+}
+
+// GetFlags returns the flags from the compiled regex bytecode.
+func GetFlags(bc []byte) int {
+	return int(cutils.GetU16(bc[HeaderFlags:]))
+}
+
+// GetGroupNames returns the named group names from compiled bytecode, or nil if none.
+func GetGroupNames(bc []byte) []string {
+	if (GetFlags(bc) & FlagNamedGroups) == 0 {
+		return nil
+	}
+	bcLen := cutils.GetU32(bc[HeaderBytecodeLen:])
+	namesData := bc[HeaderLen+int(bcLen):]
+
+	var names []string
+	pos := 0
+	for pos < len(namesData) && namesData[pos] != 0 {
+		nameEnd := pos
+		for nameEnd < len(namesData) && namesData[nameEnd] != 0 {
+			nameEnd++
+		}
+		names = append(names, string(namesData[pos:nameEnd]))
+		pos = nameEnd + GroupNameTrailerLen
+	}
+	return names
+}
+
+// GetAllocCount returns the number of capture slots needed (2 * captures + registers).
+func GetAllocCount(bc []byte) int {
+	return GetCaptureCount(bc)*2 + int(bc[HeaderRegisterCount])
+}
+
+// ============================================================================
+// Compilation
+// ============================================================================
+
+func lreCompile(buf string, reFlags int, opaque interface{}) ([]byte, string) {
+	var s parseState
+	var registerCount int
+	isSticky := (reFlags & FlagSticky) != 0
+
+	// Initialize parse state
+	s.bufPtr = []byte(buf)
+	s.bufEnd = s.bufPtr[len(s.bufPtr):]
+	s.bufStart = s.bufPtr
+	s.reFlags = reFlags
+	s.isUnicode = (reFlags & (FlagUnicode | FlagUnicodeSets)) != 0
+	s.ignoreCase = (reFlags & FlagIgnoreCase) != 0
+	s.multiLine = (reFlags & FlagMultiline) != 0
+	s.dotAll = (reFlags & FlagDotAll) != 0
+	s.unicodeSets = (reFlags & FlagUnicodeSets) != 0
+	s.captureCount = 1
+	s.totalCaptureCount = -1
+	s.hasNamedCaptures = -1
+	s.opaque = opaque
+	s.groupNameScope = 0
+	s.byteCode.init()
+	s.groupNames.init()
+
+	// Write header (will be filled in later)
+	s.byteCode.putU16(uint16(reFlags))
+	s.byteCode.putC(0) // capture count
+	s.byteCode.putC(0) // register count
+	s.byteCode.putU32(0) // bytecode length
+
+	// If not sticky, add .*? at the beginning
+	if !isSticky {
+		s.emitOpU32(OpSplitGotoFirst, 1+5)
+		s.emitOp(OpAny)
+		s.emitGoto(OpGoto, -(5 + 1 + 5))
+	}
+	s.emitOpU8(OpSaveStart, 0)
+
+	var bc []byte
+
+	// Parse the pattern
+	if s.parseDisjunction(false) != 0 {
+		goto error
+	}
+
+	s.emitOpU8(OpSaveEnd, 0)
+	s.emitOp(OpMatch)
+
+	if len(s.bufPtr) != 0 {
+		s.errorMsg = "extraneous characters at the end"
+		goto error
+	}
+
+	if s.byteCode.err() {
+		s.errorMsg = "out of memory"
+		goto error
+	}
+
+	registerCount = s.computeRegisterCount()
+	if registerCount < 0 {
+		s.errorMsg = "too many imbricated quantifiers"
+		goto error
+	}
+
+	// Fill in header
+	bc = s.byteCode.bytes()
+	bc[HeaderCaptureCount] = byte(s.captureCount)
+	bc[HeaderRegisterCount] = byte(registerCount)
+	cutils.PutU32(bc[HeaderBytecodeLen:], uint32(len(bc)-HeaderLen))
+
+	// Add named groups if present
+	if s.groupNames.len() > (s.captureCount-1)*GroupNameTrailerLen {
+		s.byteCode.put(s.groupNames.bytes())
+		flags := cutils.GetU16(bc[HeaderFlags:])
+		cutils.PutU16(bc[HeaderFlags:], flags|FlagNamedGroups)
+	}
+
+	return bc, ""
+
+error:
+	s.byteCode.free()
+	s.groupNames.free()
+	return nil, s.errorMsg
+}
+
+// ============================================================================
+// Parse State Methods
+// ============================================================================
+
+func (s *parseState) emitOp(op OpCode) {
+	s.byteCode.putC(byte(op))
+}
+
+func (s *parseState) emitOpU8(op OpCode, val uint8) {
+	s.byteCode.putC(byte(op))
+	s.byteCode.putC(val)
+}
+
+func (s *parseState) emitOpU16(op OpCode, val uint16) {
+	s.byteCode.putC(byte(op))
+	s.byteCode.putU16(val)
+}
+
+func (s *parseState) emitOpU32(op OpCode, val uint32) int {
+	s.byteCode.putC(byte(op))
+	pos := s.byteCode.len()
+	s.byteCode.putU32(val - uint32(pos) - 4)
+	return pos
+}
+
+func (s *parseState) emitGoto(op OpCode, val int32) {
+	s.byteCode.putC(byte(op))
+	pos := s.byteCode.len()
+	s.byteCode.putU32(uint32(val - int32(pos) - 4))
+}
+
+func (s *parseState) parseExpect(c byte) error {
+	if len(s.bufPtr) == 0 || s.bufPtr[0] != c {
+		s.errorMsg = fmt.Sprintf("expecting '%c'", c)
+		return errors.New(s.errorMsg)
+	}
+	s.bufPtr = s.bufPtr[1:]
+	return nil
+}
+
+func (s *parseState) parseDigits(allowOverflow bool) (int, error) {
+	v := 0
+	for len(s.bufPtr) > 0 && s.bufPtr[0] >= '0' && s.bufPtr[0] <= '9' {
+		c := int(s.bufPtr[0] - '0')
+		v = v*10 + c
+		if v >= 0x7FFFFFFF {
+			if allowOverflow {
+				v = 0x7FFFFFFF
+			} else {
+				return -1, errors.New("overflow")
+			}
+		}
+		s.bufPtr = s.bufPtr[1:]
+	}
+	return v, nil
+}
+
+// ============================================================================
+// Disjunction (Alternation)
+// ============================================================================
+
+func (s *parseState) parseDisjunction(isBackwardDir bool) int {
+	start := s.byteCode.len()
+
+	if s.parseAlternative(isBackwardDir) != 0 {
+		return -1
+	}
+
+	for len(s.bufPtr) > 0 && s.bufPtr[0] == '|' {
+		s.bufPtr = s.bufPtr[1:]
+
+		// Insert split before first alternative
+		length := s.byteCode.len() - start
+		if s.byteCode.insert(start, 5) != 0 {
+			s.errorMsg = "out of memory"
+			return -1
+		}
+		bc := s.byteCode.bytes()
+		bc[start] = byte(OpSplitNextFirst)
+		cutils.PutU32(bc[start+1:], uint32(length+5))
+
+		gotoPos := s.byteCode.len()
+		s.byteCode.putC(byte(OpGoto))
+		s.byteCode.putU32(0) // placeholder
+
+		s.groupNameScope++
+
+		if s.parseAlternative(isBackwardDir) != 0 {
+			return -1
+		}
+
+		// Patch the goto
+		bc = s.byteCode.bytes()
+		gotoTarget := s.byteCode.len() - (gotoPos + 4)
+		cutils.PutU32(bc[gotoPos+0:], uint32(gotoTarget))
+	}
+
+	return 0
+}
+
+// ============================================================================
+// Alternative (Sequence of Terms)
+// ============================================================================
+
+func (s *parseState) parseAlternative(isBackwardDir bool) int {
+	for len(s.bufPtr) > 0 && s.bufPtr[0] != '|' && s.bufPtr[0] != ')' {
+		if s.parseTerm(isBackwardDir) != 0 {
+			return -1
+		}
+	}
+	return 0
+}
+
+// ============================================================================
+// Term (Atom with Optional Quantifier)
+// ============================================================================
+
+func (s *parseState) parseTerm(isBackwardDir bool) int {
+	if len(s.bufPtr) == 0 {
+		return 0
+	}
+
+	lastAtomStart := -1
+	lastCaptureCount := 0
+	c := int(s.bufPtr[0])
+
+	switch c {
+	case '^':
+		s.bufPtr = s.bufPtr[1:]
+		if s.multiLine {
+			s.emitOp(OpLineStartM)
+		} else {
+			s.emitOp(OpLineStart)
+		}
+
+	case '$':
+		s.bufPtr = s.bufPtr[1:]
+		if s.multiLine {
+			s.emitOp(OpLineEndM)
+		} else {
+			s.emitOp(OpLineEnd)
+		}
+
+	case '.':
+		s.bufPtr = s.bufPtr[1:]
+		lastAtomStart = s.byteCode.len()
+		lastCaptureCount = s.captureCount
+		if isBackwardDir {
+			s.emitOp(OpPrev)
+		}
+		if s.dotAll {
+			s.emitOp(OpAny)
+		} else {
+			s.emitOp(OpDot)
+		}
+		if isBackwardDir {
+			s.emitOp(OpPrev)
+		}
+
+	case '*', '+', '?':
+		s.errorMsg = "nothing to repeat"
+		return -1
+
+	case '(':
+		return s.parseGroup()
+
+	case '[':
+		lastAtomStart = s.byteCode.len()
+		lastCaptureCount = s.captureCount
+		if isBackwardDir {
+			s.emitOp(OpPrev)
+		}
+		if s.parseCharClass() != 0 {
+			return -1
+		}
+		if isBackwardDir {
+			s.emitOp(OpPrev)
+		}
+
+	case '\\':
+		if s.parseEscapeSequence() != 0 {
+			return -1
+		}
+
+	default:
+		// Regular character - treat as atom
+		return s.parseAtom(isBackwardDir)
+	}
+
+	// Handle quantifier
+	if lastAtomStart >= 0 {
+		return s.parseQuantifier(lastAtomStart, lastCaptureCount)
+	}
+
+	return 0
+}
+
+// ============================================================================
+// Group Parsing
+// ============================================================================
+
+func (s *parseState) parseGroup() int {
+	s.bufPtr = s.bufPtr[1:] // skip '('
+
+	if len(s.bufPtr) == 0 {
+		s.errorMsg = "unexpected end"
+		return -1
+	}
+
+	if s.bufPtr[0] == '?' {
+		s.bufPtr = s.bufPtr[1:]
+		if len(s.bufPtr) == 0 {
+			s.errorMsg = "unexpected end"
+			return -1
+		}
+
+		switch s.bufPtr[0] {
+		case ':':
+			// Non-capturing group
+			s.bufPtr = s.bufPtr[1:]
+			lastAtomStart := s.byteCode.len()
+			lastCaptureCount := s.captureCount
+			if s.parseDisjunction(false) != 0 {
+				return -1
+			}
+			if len(s.bufPtr) == 0 || s.bufPtr[0] != ')' {
+				s.errorMsg = "expecting ')'"
+				return -1
+			}
+			s.bufPtr = s.bufPtr[1:]
+			return s.parseQuantifier(lastAtomStart, lastCaptureCount)
+
+		case '=', '!':
+			// Lookahead
+			isNeg := s.bufPtr[0] == '!'
+			s.bufPtr = s.bufPtr[1:]
+
+			// Save position for patching
+			pos := s.byteCode.len()
+			if isNeg {
+				s.emitOp(OpNegativeLookahead)
+			} else {
+				s.emitOp(OpLookahead)
+			}
+			s.byteCode.putU32(0) // placeholder
+
+			if s.parseDisjunction(false) != 0 {
+				return -1
+			}
+			if len(s.bufPtr) == 0 || s.bufPtr[0] != ')' {
+				s.errorMsg = "expecting ')'"
+				return -1
+			}
+			s.bufPtr = s.bufPtr[1:]
+			if isNeg {
+				s.emitOp(OpNegativeLookaheadMatch)
+			} else {
+				s.emitOp(OpLookaheadMatch)
+			}
+
+			// Patch the lookahead target
+			bc := s.byteCode.bytes()
+			target := s.byteCode.len() - (pos + 4)
+			cutils.PutU32(bc[pos:], uint32(target))
+
+			return 0
+
+		case '<':
+			s.bufPtr = s.bufPtr[1:]
+			if len(s.bufPtr) == 0 {
+				s.errorMsg = "unexpected end"
+				return -1
+			}
+			if s.bufPtr[0] == '=' || s.bufPtr[0] == '!' {
+				// Lookbehind - not yet implemented
+				s.errorMsg = "lookbehind not yet implemented"
+				return -1
+			}
+			// Named capture group
+			name, err := s.parseGroupName()
+			if err != nil {
+				s.errorMsg = "invalid group name"
+				return -1
+			}
+
+			// Add group name to names list
+			s.groupNames.put([]byte(name))
+			s.groupNames.putC(byte(s.groupNameScope))
+			s.hasNamedCaptures = 1
+
+			// Fall through to capture parsing
+
+		default:
+			s.errorMsg = "invalid group"
+			return -1
+		}
+	}
+
+	// Regular capturing group
+	if s.captureCount >= CaptureCountMax {
+		s.errorMsg = "too many captures"
+		return -1
+	}
+
+	lastAtomStart := s.byteCode.len()
+	lastCaptureCount := s.captureCount
+	captureIndex := s.captureCount
+	s.captureCount++
+
+	s.emitOpU8(OpSaveStart, uint8(captureIndex))
+
+	if s.parseDisjunction(false) != 0 {
+		return -1
+	}
+
+	if len(s.bufPtr) == 0 || s.bufPtr[0] != ')' {
+		s.errorMsg = "expecting ')'"
+		return -1
+	}
+	s.bufPtr = s.bufPtr[1:]
+
+	s.emitOpU8(OpSaveEnd, uint8(captureIndex))
+
+	return s.parseQuantifier(lastAtomStart, lastCaptureCount)
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func (s *parseState) parseGroupName() (string, error) {
+	var name []byte
+	for len(s.bufPtr) > 0 && s.bufPtr[0] != '>' {
+		c := s.bufPtr[0]
+		if c == '\\' && len(s.bufPtr) > 1 && s.bufPtr[1] == 'u' {
+			// Unicode escape in group name
+			s.bufPtr = s.bufPtr[2:]
+			cp, err := lreParseEscape(&s.bufPtr, 2)
+			if err != nil {
+				return "", err
+			}
+			var buf [6]byte
+			n := cutils.UnicodeToUTF8(buf[:], uint32(cp))
+			name = append(name, buf[:n]...)
+		} else {
+			name = append(name, c)
+			s.bufPtr = s.bufPtr[1:]
+		}
+	}
+	if len(name) == 0 {
+		return "", errors.New("empty group name")
+	}
+	if len(s.bufPtr) > 0 && s.bufPtr[0] == '>' {
+		s.bufPtr = s.bufPtr[1:]
+	}
+	return string(name), nil
+}
+
+// ============================================================================
+// Escape Sequences
+// ============================================================================
+
+func (s *parseState) parseEscapeSequence() int {
+	s.bufPtr = s.bufPtr[1:] // skip '\'
+	if len(s.bufPtr) == 0 {
+		s.errorMsg = "unexpected end"
+		return -1
+	}
+
+	c := s.bufPtr[0]
+	s.bufPtr = s.bufPtr[1:]
+
+	switch c {
+	case 'b':
+		if s.ignoreCase && s.isUnicode {
+			s.emitOp(OpNotWordBoundaryI)
+		} else {
+			s.emitOp(OpNotWordBoundary)
+		}
+	case 'B':
+		if s.ignoreCase && s.isUnicode {
+			s.emitOp(OpWordBoundaryI)
+		} else {
+			s.emitOp(OpWordBoundary)
+		}
+	case 'k':
+		// Named back reference
+		if len(s.bufPtr) < 2 || s.bufPtr[0] != '<' {
+			s.errorMsg = "expecting group name"
+			return -1
+		}
+		s.bufPtr = s.bufPtr[1:]
+		_, err := s.parseGroupName()
+		if err != nil {
+			s.errorMsg = "invalid group name"
+			return -1
+		}
+		// Emit placeholder back reference
+		s.emitOpU8(OpBackReference, 1)
+		s.byteCode.putC(1)
+	case '0':
+		// Null character
+		s.emitChar(0)
+	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		// Back reference or octal
+		return s.parseBackRefOctal(c)
+	default:
+		// Put character back and parse as atom
+		s.bufPtr = append([]byte{c}, s.bufPtr...)
+		return s.parseAtom(false)
+	}
+
+	return 0
+}
+
+func (s *parseState) parseBackRefOctal(firstDigit byte) int {
+	// Parse the number
+	num := int(firstDigit - '0')
+
+	// Check if it's a back reference
+	if num < s.captureCount {
+		// Back reference
+		if s.ignoreCase {
+			s.emitOpU8(OpBackReferenceI, 1)
+		} else {
+			s.emitOpU8(OpBackReference, 1)
+		}
+		s.byteCode.putC(byte(num))
+		return 0
+	}
+
+	// Check for octal
+	if !s.isUnicode && num <= 7 {
+		// Legacy octal escape
+		c := num
+		if len(s.bufPtr) > 0 && s.bufPtr[0] >= '0' && s.bufPtr[0] <= '7' {
+			c = c*8 + int(s.bufPtr[0]-'0')
+			s.bufPtr = s.bufPtr[1:]
+			if c < 32 && len(s.bufPtr) > 0 && s.bufPtr[0] >= '0' && s.bufPtr[0] <= '7' {
+				c = c*8 + int(s.bufPtr[0]-'0')
+				s.bufPtr = s.bufPtr[1:]
+			}
+		}
+		s.emitChar(c)
+		return 0
+	}
+
+	// Invalid back reference
+	s.errorMsg = "invalid back reference"
+	return -1
+}
+
+// ============================================================================
+// Atom Parsing (Character or Character Class)
+// ============================================================================
+
+func (s *parseState) parseAtom(isBackwardDir bool) int {
+	lastAtomStart := s.byteCode.len()
+	lastCaptureCount := s.captureCount
+
+	if isBackwardDir {
+		s.emitOp(OpPrev)
+	}
+
+	// Get character
+	if len(s.bufPtr) == 0 {
+		s.errorMsg = "unexpected end"
+		return -1
+	}
+
+	c, err := s.getClassAtom(false)
+	if err != nil {
+		s.errorMsg = err.Error()
+		return -1
+	}
+
+	if c >= ClassRangeBase {
+		// Character class - emit appropriate opcode
+		class := c - ClassRangeBase
+		switch class {
+		case 0: // \d
+			s.emitOp(OpRange)
+			s.byteCode.putU16(1)
+			s.byteCode.putU16(0x0030)
+			s.byteCode.putU16(0x003A)
+		case 1: // \D
+			s.emitOp(OpNotSpace) // Simplified
+		case 2: // \s
+			s.emitOp(OpSpace)
+		case 3: // \S
+			s.emitOp(OpNotSpace)
+		case 4: // \w
+			s.emitOp(OpRange)
+			s.byteCode.putU16(1)
+			s.byteCode.putU16(0x0030)
+			s.byteCode.putU16(0x003A)
+			// Plus A-Z, _, a-z - simplified
+		case 5: // \W
+			s.emitOp(OpNotSpace) // Simplified
+		}
+	} else {
+		// Single character
+		if s.ignoreCase {
+			c = int(quickunicode.LRECanonicalize(uint32(c), s.isUnicode))
+		}
+		s.emitChar(c)
+	}
+
+	if isBackwardDir {
+		s.emitOp(OpPrev)
+	}
+
+	// Handle quantifier
+	return s.parseQuantifier(lastAtomStart, lastCaptureCount)
+}
+
+func (s *parseState) getClassAtom(inclass bool) (int, error) {
+	if len(s.bufPtr) == 0 {
+		return -1, errors.New("unexpected end")
+	}
+
+	c := int(s.bufPtr[0])
+
+	switch c {
+	case '\\':
+		s.bufPtr = s.bufPtr[1:]
+		if len(s.bufPtr) == 0 {
+			return '\\', nil
+		}
+		c = int(s.bufPtr[0])
+		s.bufPtr = s.bufPtr[1:]
+
+		switch c {
+		case 'd':
+			return ClassRangeBase + int(CharRangeD), nil
+		case 'D':
+			return ClassRangeBase + int(CharRangeD) + 1, nil
+		case 's':
+			return ClassRangeBase + int(CharRangeS), nil
+		case 'S':
+			return ClassRangeBase + int(CharRangeS) + 1, nil
+		case 'w':
+			return ClassRangeBase + int(CharRangeW), nil
+		case 'W':
+			return ClassRangeBase + int(CharRangeW) + 1, nil
+		case 'c':
+			if len(s.bufPtr) == 0 {
+				return '\\', nil
+			}
+			c1 := int(s.bufPtr[0])
+			if (c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') ||
+				((c1 >= '0' && c1 <= '9' || c1 == '_') && inclass && !s.isUnicode) {
+				s.bufPtr = s.bufPtr[1:]
+				return c1 & 0x1F, nil
+			} else if s.isUnicode {
+				return -1, errors.New("invalid escape sequence")
+			}
+			return '\\', nil
+		case '-':
+			if !inclass && s.isUnicode {
+				return -1, errors.New("invalid escape sequence")
+			}
+			return '-', nil
+		case 'n':
+			return '\n', nil
+		case 'r':
+			return '\r', nil
+		case 't':
+			return '\t', nil
+		case '0':
+			return 0, nil
+		default:
+			// Try to parse as escape
+			s.bufPtr = append([]byte{byte(c)}, s.bufPtr...)
+			ret, err := lreParseEscape(&s.bufPtr, 0)
+			if err != nil || ret < 0 {
+				if s.isUnicode {
+					return -1, errors.New("invalid escape sequence")
+				}
+				return c, nil
+			}
+			return ret, nil
+		}
+
+		case 0:
+		return -1, errors.New("unexpected end")
+
+	default:
+		s.bufPtr = s.bufPtr[1:]
+		// Handle UTF-8
+		if c >= 0x80 {
+			r, l := cutils.UnicodeFromUTF8(s.bufPtr, cutils.UTF8CharLenMax)
+			if r < 0 {
+				if s.isUnicode {
+					return -1, errors.New("malformed unicode char")
+				}
+			} else {
+				s.bufPtr = s.bufPtr[l:]
+				c = int(r)
+				if r > 0xFFFF && !s.isUnicode {
+					return -1, errors.New("malformed unicode char")
+				}
+			}
+		}
+		return c, nil
+	}
+}
+
+func (s *parseState) emitChar(c int) {
+	if c <= 0xFFFF {
+		if s.ignoreCase {
+			s.emitOpU16(OpCharI, uint16(c))
+		} else {
+			s.emitOpU16(OpChar, uint16(c))
+		}
+	} else {
+		if s.ignoreCase {
+			s.emitOpU32(OpChar32I, uint32(c))
+		} else {
+			s.emitOpU32(OpChar32, uint32(c))
+		}
+	}
+}
+
+// ============================================================================
+// Character Class [...]
+// ============================================================================
+
+func (s *parseState) parseCharClass() int {
+	s.bufPtr = s.bufPtr[1:] // skip '['
+
+	// Check for negated
+	inverted := false
+	if len(s.bufPtr) > 0 && s.bufPtr[0] == '^' {
+		s.bufPtr = s.bufPtr[1:]
+		inverted = true
+	}
+
+	// Parse characters until ']'
+	var ranges []struct{ lo, hi uint32 }
+	for len(s.bufPtr) > 0 && s.bufPtr[0] != ']' {
+		c1, err := s.getClassAtom(true)
+		if err != nil {
+			return -1
+		}
+
+		// Check for range
+		if len(s.bufPtr) > 1 && s.bufPtr[0] == '-' && s.bufPtr[1] != ']' {
+			s.bufPtr = s.bufPtr[1:] // skip '-'
+			c2, err := s.getClassAtom(true)
+			if err != nil {
+				return -1
+			}
+			if c2 < c1 {
+				s.errorMsg = "invalid class range"
+				return -1
+			}
+			ranges = append(ranges, struct{ lo, hi uint32 }{uint32(c1), uint32(c2 + 1)})
+		} else {
+			ranges = append(ranges, struct{ lo, hi uint32 }{uint32(c1), uint32(c1 + 1)})
+		}
+	}
+
+	if len(s.bufPtr) == 0 {
+		s.errorMsg = "unterminated character class"
+		return -1
+	}
+	s.bufPtr = s.bufPtr[1:] // skip ']'
+
+	// Emit range opcodes
+	for _, r := range ranges {
+		if s.ignoreCase {
+			s.emitOp(OpRangeI)
+		} else {
+			s.emitOp(OpRange)
+		}
+		s.byteCode.putU16(1) // 1 range
+		if r.hi <= 0xFFFF {
+			s.byteCode.putU16(uint16(r.lo))
+			s.byteCode.putU16(uint16(r.hi))
+		} else {
+			s.byteCode.putU32(r.lo)
+			s.byteCode.putU32(r.hi)
+		}
+	}
+
+	if inverted {
+		// Emit negated ranges - simplified, would need full range support
+	}
+
+	return 0
+}
+
+// ============================================================================
+// Quantifiers
+// ============================================================================
+
+// TODO: implement quantifier bytecode emission using computed min/max
+func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
+	if len(s.bufPtr) == 0 {
+		return 0
+	}
+
+	switch s.bufPtr[0] {
+	case '*', '+', '?':
+		// Consume quantifier token
+		s.bufPtr = s.bufPtr[1:]
+	case '{':
+		// Parse {n,m} quantifier
+		s.bufPtr = s.bufPtr[1:]
+		_, err := s.parseDigits(true)
+		if err != nil {
+			s.errorMsg = "invalid quantifier"
+			return -1
+		}
+		if len(s.bufPtr) > 0 && s.bufPtr[0] == ',' {
+			s.bufPtr = s.bufPtr[1:]
+			if len(s.bufPtr) > 0 && s.bufPtr[0] >= '0' && s.bufPtr[0] <= '9' {
+				_, err = s.parseDigits(true)
+				if err != nil {
+					s.errorMsg = "invalid quantifier"
+					return -1
+				}
+			}
+		}
+		if len(s.bufPtr) == 0 || s.bufPtr[0] != '}' {
+			s.errorMsg = "expecting '}'"
+			return -1
+		}
+		s.bufPtr = s.bufPtr[1:]
+	default:
+		return 0
+	}
+
+	// Check for non-greedy
+	if len(s.bufPtr) > 0 && s.bufPtr[0] == '?' {
+		s.bufPtr = s.bufPtr[1:]
+	}
+
+	return 0
+}
+
+// ============================================================================
+// Register Count Computation
+// ============================================================================
+
+func (s *parseState) computeRegisterCount() int {
+	bc := s.byteCode.bytes()
+	if len(bc) < HeaderLen {
+		return 0
+	}
+
+	stackSize := 0
+	maxStackSize := 0
+	pos := HeaderLen
+
+	for pos < len(bc) {
+		op := OpCode(bc[pos])
+		if op >= OpCount {
+			break
+		}
+		size := opcodeSize[op]
+		if pos+size > len(bc) {
+			break
+		}
+
+		switch op {
+		case OpSetI32, OpSetCharPos:
+			stackSize++
+			if stackSize > maxStackSize {
+				if stackSize > RegisterCountMax {
+					return -1
+				}
+				maxStackSize = stackSize
+			}
+		case OpCheckAdvance, OpLoop, OpLoopSplitGotoFirst, OpLoopSplitNextFirst:
+			if stackSize > 0 {
+				stackSize--
+			}
+		case OpLoopCheckAdvSplitGotoFirst, OpLoopCheckAdvSplitNextFirst:
+			if stackSize >= 2 {
+				stackSize -= 2
+			}
+		}
+		pos += size
+	}
+
+	return maxStackSize
+}
+
+// ============================================================================
+// Escape Sequence Parsing
+// ============================================================================
+
+func lreParseEscape(p *[]byte, allowUTF16 int) (int, error) {
+	if len(*p) == 0 {
+		return -2, nil
+	}
+
+	c := int((*p)[0])
+	*p = (*p)[1:]
+
+	switch c {
+	case 'b':
+		return '\b', nil
+	case 'f':
+		return '\f', nil
+	case 'n':
+		return '\n', nil
+	case 'r':
+		return '\r', nil
+	case 't':
+		return '\t', nil
+	case 'v':
+		return '\v', nil
+	case 'x':
+		if len(*p) < 2 {
+			return -1, errors.New("invalid hex escape")
+		}
+		h0 := cutils.FromHex(int((*p)[0]))
+		h1 := cutils.FromHex(int((*p)[1]))
+		if h0 < 0 || h1 < 0 {
+			return -1, errors.New("invalid hex escape")
+		}
+		*p = (*p)[2:]
+		return (h0 << 4) | h1, nil
+	case 'u':
+		if len(*p) > 0 && (*p)[0] == '{' && allowUTF16 > 0 {
+			*p = (*p)[1:]
+			c = 0
+			for len(*p) > 0 && (*p)[0] != '}' {
+				h := cutils.FromHex(int((*p)[0]))
+				if h < 0 {
+					return -1, errors.New("invalid unicode escape")
+				}
+				c = (c << 4) | h
+				if c > 0x10FFFF {
+					return -1, errors.New("unicode codepoint too large")
+				}
+				*p = (*p)[1:]
+			}
+			if len(*p) == 0 {
+				return -1, errors.New("unterminated unicode escape")
+			}
+			*p = (*p)[1:] // skip '}'
+		} else {
+			// 4-digit unicode escape
+			if len(*p) < 4 {
+				return -1, errors.New("invalid unicode escape")
+			}
+			c = 0
+			for i := 0; i < 4; i++ {
+				h := cutils.FromHex(int((*p)[i]))
+				if h < 0 {
+					return -1, errors.New("invalid unicode escape")
+				}
+				c = (c << 4) | h
+			}
+			*p = (*p)[4:]
+		}
+		return c, nil
+	case '0', '1', '2', '3', '4', '5', '6', '7':
+		c = c - '0'
+		if allowUTF16 == 2 {
+			// Only accept \0 not followed by digit
+			if c != 0 || len(*p) > 0 && (*p)[0] >= '0' && (*p)[0] <= '9' {
+				return -1, errors.New("invalid \\0 escape")
+			}
+		} else {
+			// Legacy octal
+			if len(*p) > 0 && (*p)[0] >= '0' && (*p)[0] <= '7' {
+				c = (c << 3) | int((*p)[0]-'0')
+				*p = (*p)[1:]
+				if c >= 32 && len(*p) > 0 && (*p)[0] >= '0' && (*p)[0] <= '7' {
+					c = (c << 3) | int((*p)[0]-'0')
+					*p = (*p)[1:]
+				}
+			}
+		}
+		return c, nil
+	default:
+		return -2, nil // Not an escape sequence
+	}
+}
+
+// ============================================================================
+// Execution Engine
+// ============================================================================
+
+type execContext struct {
+	cbuf             []byte
+	cbufEnd          []byte
+	cbufType         int // 0 = 8-bit, 1 = 16-bit, 2 = 16-bit UTF-16
+	captureCount     int
+	isUnicode        bool
+	interruptCounter int
+	opaque           interface{}
+	stackBuf         []stackFrame
+	stackSize        int
+	staticStack      [32]stackFrame
+}
+
+type stackFrame struct {
+	pc    []byte
+	cptr  []byte
+	bp    int
+	state int // 0 = split, 1 = lookahead, 2 = negative lookahead
+}
+
+func lreExec(capture [][]byte, bc []byte, cbuf []byte, cindex int, clen int, cbufType int, opaque interface{}) int {
+	if len(bc) < HeaderLen {
+		return RetMemoryError
+	}
+
+	reFlags := GetFlags(bc)
+	isUnicode := (reFlags & (FlagUnicode | FlagUnicodeSets)) != 0
+	captureCount := int(bc[HeaderCaptureCount])
+
+	// Initialize capture array
+	for i := range capture {
+		capture[i] = nil
+	}
+
+	// Setup context
+	var ctx execContext
+	ctx.cbuf = cbuf
+	ctx.cbufEnd = cbuf[clen:]
+	if cbufType == 1 && isUnicode {
+		cbufType = 2
+	}
+	ctx.cbufType = cbufType
+	ctx.captureCount = captureCount
+	ctx.isUnicode = isUnicode
+	ctx.interruptCounter = InterruptCounterInit
+	ctx.opaque = opaque
+
+	ctx.stackBuf = ctx.staticStack[:]
+	ctx.stackSize = len(ctx.staticStack)
+
+	cptr := cbuf[cindex:]
+
+	// Execute
+	pc := bc[HeaderLen:]
+	return lreExecBacktrack(&ctx, capture, pc, &cptr)
+}
+
+func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byte) int {
+	sp := 0
+	bp := 0
+
+	for {
+		if sp >= len(ctx.stackBuf)-10 {
+			// Grow stack
+			if ctx.stackBuf == nil || &ctx.stackBuf[0] == &ctx.staticStack[0] {
+				newStack := make([]stackFrame, ctx.stackSize*3/2)
+				copy(newStack, ctx.stackBuf)
+				ctx.stackBuf = newStack
+			} else {
+				newStack := make([]stackFrame, ctx.stackSize*3/2)
+				copy(newStack, ctx.stackBuf)
+				ctx.stackBuf = newStack
+			}
+		}
+
+		if len(pc) == 0 {
+			return RetNoMatch
+		}
+
+		op := OpCode(pc[0])
+		pc = pc[1:]
+
+		switch op {
+		case OpMatch:
+			return RetMatch
+
+		case OpChar, OpCharI, OpChar32, OpChar32I:
+			var val uint32
+			if op == OpChar32 || op == OpChar32I {
+				val = cutils.GetU32(pc)
+				pc = pc[4:]
+			} else {
+				val = uint32(cutils.GetU16(pc))
+				pc = pc[2:]
+			}
+
+			if len(*cptr) == 0 {
+				goto backtrack
+			}
+			c := getChar(cptr, ctx.cbufType)
+
+			if op == OpCharI || op == OpChar32I {
+				c = quickunicode.LRECanonicalize(c, ctx.isUnicode)
+			}
+
+			if val != c {
+				goto backtrack
+			}
+
+		case OpDot:
+			if len(*cptr) == 0 {
+				goto backtrack
+			}
+			c := getChar(cptr, ctx.cbufType)
+			if isLineTerminator(c) {
+				goto backtrack
+			}
+
+		case OpAny:
+			if len(*cptr) == 0 {
+				goto backtrack
+			}
+			getChar(cptr, ctx.cbufType)
+
+		case OpSpace, OpNotSpace:
+			if len(*cptr) == 0 {
+				goto backtrack
+			}
+			c := getChar(cptr, ctx.cbufType)
+			isSpace := quickunicode.IsSpace(c)
+			if (op == OpSpace && !isSpace) || (op == OpNotSpace && isSpace) {
+				goto backtrack
+			}
+
+		case OpLineStart, OpLineStartM:
+			if len(*cptr) > 0 {
+				if op == OpLineStart {
+					goto backtrack
+				}
+				// In multiline mode, check if previous char is line terminator
+				if len(*cptr) > 0 {
+					prev := peekPrevChar(cptr, ctx.cbufType)
+					if !isLineTerminator(prev) {
+						goto backtrack
+					}
+				}
+			}
+
+		case OpLineEnd, OpLineEndM:
+			if len(*cptr) == 0 {
+				if op == OpLineEnd {
+					goto backtrack
+				}
+				// In multiline mode, current char is line terminator
+				if len(*cptr) > 0 {
+					c := peekChar(cptr, ctx.cbufType)
+					if !isLineTerminator(c) {
+						goto backtrack
+					}
+				}
+			}
+
+		case OpSplitGotoFirst, OpSplitNextFirst:
+			offset := int(cutils.GetU32(pc))
+			pc = pc[4:]
+
+			var pc1 []byte
+			if op == OpSplitNextFirst {
+				pc1 = pc[offset:]
+			} else {
+				pc1 = pc
+				pc = pc[offset:]
+			}
+
+			// Push state
+			ctx.stackBuf[sp] = stackFrame{pc: pc1, cptr: *cptr, bp: bp, state: 0}
+			sp++
+			bp = sp
+
+		case OpGoto:
+			offset := int(cutils.GetU32(pc))
+			pc = pc[4+offset:]
+
+		case OpSaveStart, OpSaveEnd:
+			idx := int(pc[0])
+			pc = pc[1:]
+			if idx >= ctx.captureCount {
+				continue
+			}
+			capIdx := 2*idx + int(op-OpSaveStart)
+			capture[capIdx] = *cptr
+
+		case OpSaveReset:
+			val1 := int(pc[0])
+			val2 := int(pc[1])
+			pc = pc[2:]
+
+			for val := val1; val <= val2; val++ {
+				capIdx := 2 * val
+				capture[capIdx] = nil
+				capture[capIdx+1] = nil
+			}
+
+		case OpRange, OpRangeI:
+			n := int(cutils.GetU16(pc))
+			pc = pc[2:]
+
+			if len(*cptr) == 0 {
+				goto backtrack
+			}
+			c := getChar(cptr, ctx.cbufType)
+
+			if op == OpRangeI {
+				c = quickunicode.LRECanonicalize(c, ctx.isUnicode)
+			}
+
+			// Binary search in ranges
+			low := cutils.GetU16(pc)
+			if uint16(c) < low {
+				goto backtrack
+			}
+
+			high := cutils.GetU16(pc[(n-1)*4+2:])
+			if uint16(c) > high {
+				goto backtrack
+			}
+
+			// Binary search
+			lo, hi := 0, n-1
+			found := false
+			for lo <= hi {
+				mid := (lo + hi) / 2
+				low = cutils.GetU16(pc[mid*4:])
+				high = cutils.GetU16(pc[mid*4+2:])
+				if uint16(c) < low {
+					hi = mid - 1
+				} else if uint16(c) > high {
+					lo = mid + 1
+				} else {
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				goto backtrack
+			}
+
+			pc = pc[n*4:]
+
+		case OpRange32, OpRange32I:
+			n := int(cutils.GetU16(pc))
+			pc = pc[2:]
+
+			if len(*cptr) == 0 {
+				goto backtrack
+			}
+			c := getChar(cptr, ctx.cbufType)
+
+			if op == OpRange32I {
+				c = quickunicode.LRECanonicalize(c, ctx.isUnicode)
+			}
+
+			low := cutils.GetU32(pc)
+			if c < low {
+				goto backtrack
+			}
+
+			high := cutils.GetU32(pc[(n-1)*8+4:])
+			if c > high {
+				goto backtrack
+			}
+
+			pc = pc[n*8:]
+
+		case OpLookahead, OpNegativeLookahead:
+			offset := int(cutils.GetU32(pc))
+			pc = pc[4:]
+
+			// Save state
+			target := pc[offset:]
+			savedCptr := *cptr
+
+			// Execute lookahead
+			result := lreExecBacktrack(ctx, capture, target, cptr)
+
+			if (op == OpLookahead && result != RetMatch) ||
+				(op == OpNegativeLookahead && result == RetMatch) {
+				goto backtrack
+			}
+
+			*cptr = savedCptr
+
+		case OpLookaheadMatch, OpNegativeLookaheadMatch:
+			// Successfully completed lookahead
+			continue
+
+		case OpWordBoundary, OpWordBoundaryI, OpNotWordBoundary, OpNotWordBoundaryI:
+			v1 := false
+			v2 := false
+
+			// Char before
+			if len(*cptr) > 0 {
+				prev := peekPrevChar(cptr, ctx.cbufType)
+				if prev < 256 {
+					v1 = quickunicode.LREIsWordByte(uint8(prev))
+				} else {
+					v1 = (prev == 0x017F || prev == 0x212A)
+				}
+			}
+
+			// Current char
+			if len(*cptr) > 0 {
+				curr := peekChar(cptr, ctx.cbufType)
+				if curr < 256 {
+					v2 = quickunicode.LREIsWordByte(uint8(curr))
+				} else {
+					v2 = (curr == 0x017F || curr == 0x212A)
+				}
+			}
+
+			isBoundary := (op == OpWordBoundary || op == OpWordBoundaryI)
+			expected := v1 != v2 != isBoundary
+
+			if expected != (op == OpNotWordBoundary || op == OpNotWordBoundaryI) {
+				goto backtrack
+			}
+
+		case OpBackReference, OpBackReferenceI:
+			n := int(pc[0])
+			pc = pc[1:]
+
+			// Simplified backreference handling
+			if n >= ctx.captureCount {
+				goto backtrack
+			}
+
+			start := capture[2*n]
+			end := capture[2*n+1]
+			if start == nil || end == nil {
+				continue // Empty capture always matches
+			}
+
+			// Compare with captured text
+			for len(start) < len(end) && len(*cptr) > 0 {
+				c1 := getChar(&start, ctx.cbufType)
+				c2 := getChar(cptr, ctx.cbufType)
+
+				if op == OpBackReferenceI {
+					c1 = quickunicode.LRECanonicalize(c1, ctx.isUnicode)
+					c2 = quickunicode.LRECanonicalize(c2, ctx.isUnicode)
+				}
+
+				if c1 != c2 {
+					goto backtrack
+				}
+			}
+
+		case OpPrev:
+			if len(*cptr) == 0 {
+				goto backtrack
+			}
+			prevChar(cptr, ctx.cbufType)
+
+		default:
+			goto backtrack
+		}
+
+		continue
+
+	backtrack:
+		// Pop and restore state
+		if sp == 0 {
+			return RetNoMatch
+		}
+		sp--
+		frame := ctx.stackBuf[sp]
+		pc = frame.pc
+		*cptr = frame.cptr
+		bp = frame.bp
+	}
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+func getChar(cptr *[]byte, cbufType int) uint32 {
+	if cbufType == 0 {
+		if len(*cptr) == 0 {
+			return 0
+		}
+		c := uint32((*cptr)[0])
+		*cptr = (*cptr)[1:]
+		return c
+	}
+	// 16-bit or UTF-16
+	if len(*cptr) < 2 {
+		return 0
+	}
+	c := uint32(cutils.GetU16(*cptr))
+	*cptr = (*cptr)[2:]
+	return c
+}
+
+func peekChar(cptr *[]byte, cbufType int) uint32 {
+	if cbufType == 0 {
+		if len(*cptr) == 0 {
+			return 0
+		}
+		return uint32((*cptr)[0])
+	}
+	if len(*cptr) < 2 {
+		return 0
+	}
+	return uint32(cutils.GetU16(*cptr))
+}
+
+func peekPrevChar(cptr *[]byte, cbufType int) uint32 {
+	if cbufType == 0 {
+		if len(*cptr) == 0 {
+			return 0
+		}
+		return uint32((*cptr)[len(*cptr)-1])
+	}
+	if len(*cptr) < 2 {
+		return 0
+	}
+	return uint32(cutils.GetU16((*cptr)[len(*cptr)-2:]))
+}
+
+func prevChar(cptr *[]byte, cbufType int) {
+	if cbufType == 0 {
+		if len(*cptr) > 0 {
+			*cptr = (*cptr)[:len(*cptr)-1]
+		}
+	} else {
+		if len(*cptr) >= 2 {
+			*cptr = (*cptr)[:len(*cptr)-2]
+		}
+	}
+}
+
+func isLineTerminator(c uint32) bool {
+	return c == '\n' || c == '\r' || c == CPLineSeparator || c == CPParagraphSeparator
+}
