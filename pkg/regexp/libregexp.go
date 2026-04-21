@@ -4,6 +4,7 @@
 package regexp
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -46,7 +47,54 @@ const (
 	InterruptCounterInit = 10000
 )
 
-// Unicode line terminators
+// opcodeSizes maps opcode value to total size in bytes (from QuickJS libregexp-opcode.h)
+var opcodeSizes = map[OpCode]int{
+	OpInvalid:                  1,
+	OpChar:                     3,
+	OpCharI:                    3,
+	OpChar32:                   5,
+	OpChar32I:                  5,
+	OpDot:                      1,
+	OpAny:                      1,
+	OpSpace:                    1,
+	OpNotSpace:                 1,
+	OpLineStart:                1,
+	OpLineStartM:               1,
+	OpLineEnd:                  1,
+	OpLineEndM:                 1,
+	OpGoto:                     5,
+	OpSplitGotoFirst:           5,
+	OpSplitNextFirst:           5,
+	OpMatch:                    1,
+	OpLookaheadMatch:           1,
+	OpNegativeLookaheadMatch:   1,
+	OpSaveStart:                2,
+	OpSaveEnd:                  2,
+	OpSaveReset:                3,
+	OpLoop:                     6,
+	OpLoopSplitGotoFirst:       10,
+	OpLoopSplitNextFirst:       10,
+	OpLoopCheckAdvSplitGotoFirst: 10,
+	OpLoopCheckAdvSplitNextFirst: 10,
+	OpSetI32:                   6,
+	OpWordBoundary:             1,
+	OpWordBoundaryI:            1,
+	OpNotWordBoundary:          1,
+	OpNotWordBoundaryI:         1,
+	OpBackReference:            2,
+	OpBackReferenceI:           2,
+	OpBackwardBackReference:    2,
+	OpBackwardBackReferenceI:   2,
+	OpRange:                    3,
+	OpRangeI:                   3,
+	OpRange32:                  3,
+	OpRange32I:                 3,
+	OpLookahead:                5,
+	OpNegativeLookahead:        5,
+	OpSetCharPos:               2,
+	OpCheckAdvance:             2,
+	OpPrev:                     1,
+}// Unicode line terminators
 const (
 	CPLineSeparator       = 0x2028
 	CPParagraphSeparator  = 0x2029
@@ -561,14 +609,40 @@ func (s *parseState) emitOpU16(op OpCode, val uint16) {
 func (s *parseState) emitOpU32(op OpCode, val uint32) int {
 	s.byteCode.putC(byte(op))
 	pos := s.byteCode.len()
-	s.byteCode.putU32(val - uint32(pos) - 4)
+	s.byteCode.putU32(val)
 	return pos
 }
 
-func (s *parseState) emitGoto(op OpCode, val int32) {
+// emitOpU32Forward emits an opcode with a placeholder 32-bit offset for forward references
+// Returns the position where the offset is stored for later patching
+func (s *parseState) emitOpU32Forward(op OpCode) int {
 	s.byteCode.putC(byte(op))
 	pos := s.byteCode.len()
-	s.byteCode.putU32(uint32(val - int32(pos) - 4))
+	s.byteCode.putU32(0) // placeholder, patched later
+	return pos
+}
+
+// patchU32 patches the offset at position pos to jump to target
+// Formula: offset = target_position - (offset_field_position + 4)
+func (s *parseState) patchU32(pos int, target int) {
+	offset := int32(target - (pos + 4))
+	binary.LittleEndian.PutUint32(s.byteCode.buf[pos:], uint32(offset))
+}
+
+// emitGoto emits a goto instruction with a relative offset (for backward references)
+// offset is already the relative distance from pc+4, store as-is
+func (s *parseState) emitGoto(op OpCode, offset int32) {
+	s.byteCode.putC(byte(op))
+	s.byteCode.putU32(uint32(offset))
+}
+
+// emitGotoForward emits a goto instruction with placeholder offset for forward references
+// Returns the position where the offset is stored for later patching
+func (s *parseState) emitGotoForward(op OpCode) int {
+	s.byteCode.putC(byte(op))
+	pos := s.byteCode.len()
+	s.byteCode.putU32(0) // placeholder
+	return pos
 }
 
 func (s *parseState) parseExpect(c byte) error {
@@ -619,11 +693,12 @@ func (s *parseState) parseDisjunction(isBackwardDir bool) int {
 		}
 		bc := s.byteCode.bytes()
 		bc[start] = byte(OpSplitNextFirst)
-		cutils.PutU32(bc[start+1:], uint32(length+5))
+		// Calculate split offset using formula
+		splitOffset := int32((start + 5 + length) - (start + 1 + 4))
+		binary.LittleEndian.PutUint32(bc[start+1:], uint32(splitOffset))
 
-		gotoPos := s.byteCode.len()
-		s.byteCode.putC(byte(OpGoto))
-		s.byteCode.putU32(0) // placeholder
+		// Emit forward goto
+		gotoPos := s.emitGotoForward(OpGoto)
 
 		s.groupNameScope++
 
@@ -632,9 +707,7 @@ func (s *parseState) parseDisjunction(isBackwardDir bool) int {
 		}
 
 		// Patch the goto
-		bc = s.byteCode.bytes()
-		gotoTarget := s.byteCode.len() - (gotoPos + 4)
-		cutils.PutU32(bc[gotoPos+0:], uint32(gotoTarget))
+		s.patchU32(gotoPos, s.byteCode.len())
 	}
 
 	return 0
@@ -1446,7 +1519,7 @@ type execContext struct {
 }
 
 type stackFrame struct {
-	pc    []byte
+	pc    int    // offset from start of full bytecode
 	cptr  []byte
 	bp    int
 	state int // 0 = split, 1 = lookahead, 2 = negative lookahead
@@ -1485,13 +1558,15 @@ func lreExec(capture [][]byte, bc []byte, cbuf []byte, cindex int, clen int, cbu
 	cptr := cbuf[cindex:]
 
 	// Execute
-	pc := bc[HeaderLen:]
-	return lreExecBacktrack(&ctx, capture, pc, &cptr)
+	pcOffset := 0
+	return lreExecBacktrack(&ctx, capture, bc, HeaderLen + pcOffset, &cptr)
 }
 
-func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byte) int {
+func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, startPc int, cptr *[]byte) int {
 	sp := 0
 	bp := 0
+	pc := startPc
+	bytecodeLen := len(fullBytecode)
 
 	for {
 		if sp >= len(ctx.stackBuf)-10 {
@@ -1507,12 +1582,17 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			}
 		}
 
-		if len(pc) == 0 {
+		if pc < 0 || pc >= bytecodeLen {
 			return RetNoMatch
 		}
+		op := OpCode(fullBytecode[pc])
+		pc += 1
 
-		op := OpCode(pc[0])
-		pc = pc[1:]
+		// Ensure pc has enough bytes for this opcode
+		size, ok := opcodeSizes[op]
+		if !ok || (pc + (size - 1)) > bytecodeLen {
+			return RetNoMatch
+		}
 
 		switch op {
 		case OpMatch:
@@ -1521,11 +1601,11 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 		case OpChar, OpCharI, OpChar32, OpChar32I:
 			var val uint32
 			if op == OpChar32 || op == OpChar32I {
-				val = cutils.GetU32(pc)
-				pc = pc[4:]
+				val = cutils.GetU32(fullBytecode[pc:pc+4])
+				pc += 4 // advance by 4 bytes (total size 5 - 1 opcode)
 			} else {
-				val = uint32(cutils.GetU16(pc))
-				pc = pc[2:]
+				val = uint32(cutils.GetU16(fullBytecode[pc:pc+2]))
+				pc += 2 // advance by 2 bytes (total size 3 -1 opcode)
 			}
 
 			if len(*cptr) == 0 {
@@ -1540,6 +1620,7 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			if val != c {
 				goto backtrack
 			}
+			// NOTE: getChar already advances the input pointer, no need to advance again
 
 		case OpDot:
 			if len(*cptr) == 0 {
@@ -1549,12 +1630,14 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			if isLineTerminator(c) {
 				goto backtrack
 			}
+			// NOTE: getChar already advances the input pointer, no need to advance again
 
 		case OpAny:
 			if len(*cptr) == 0 {
 				goto backtrack
 			}
 			getChar(cptr, ctx.cbufType)
+			// NOTE: getChar already advances the input pointer, no need to advance again
 
 		case OpSpace, OpNotSpace:
 			if len(*cptr) == 0 {
@@ -1595,15 +1678,23 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			}
 
 		case OpSplitGotoFirst, OpSplitNextFirst:
-			offset := int(cutils.GetU32(pc))
-			pc = pc[4:]
-
-			var pc1 []byte
+			// Split opcodes are size 5 bytes: 1 byte opcode +4 byte signed offset
+			// Step 1: Read signed offset
+			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
+			pc += 4 // advance past operand (4 bytes, total size 5 - 1 opcode)
+			// Step 2: Calculate split target
+			splitPc := pc + int(offset)
+			if splitPc < 0 || splitPc > bytecodeLen {
+				goto backtrack
+			}
+			var pc1 int
 			if op == OpSplitNextFirst {
-				pc1 = pc[offset:]
+				// OpSplitNextFirst (0x0f, 15): execute current pc first, push splitPc to stack
+				pc1 = splitPc
 			} else {
+				// OpSplitGotoFirst (0x0e, 14): execute splitPc (pattern match) first, push current pc to stack
 				pc1 = pc
-				pc = pc[offset:]
+				pc = splitPc
 			}
 
 			// Push state
@@ -1611,13 +1702,23 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			sp++
 			bp = sp
 
+
 		case OpGoto:
-			offset := int(cutils.GetU32(pc))
-			pc = pc[4+offset:]
+			// OpGoto is size 5 bytes: 1 byte opcode + 4 byte signed offset
+			// Step 1: Read signed offset
+			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
+			pc += 4 // advance past operand (4 bytes, total size 5 - 1 opcode)
+			// Step 3: Apply offset
+			newPc := pc + int(offset)
+			if newPc < 0 || newPc > bytecodeLen {
+				return RetNoMatch
+			}
+			pc = newPc
 
 		case OpSaveStart, OpSaveEnd:
-			idx := int(pc[0])
-			pc = pc[1:]
+			// OpSaveStart/OpSaveEnd are size 2 bytes: 1 byte opcode + 1 byte operand
+			idx := int(fullBytecode[pc])
+			pc += 1 // advance by 1 byte (total size 2 - 1 opcode)
 			if idx >= ctx.captureCount {
 				continue
 			}
@@ -1625,9 +1726,9 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			capture[capIdx] = *cptr
 
 		case OpSaveReset:
-			val1 := int(pc[0])
-			val2 := int(pc[1])
-			pc = pc[2:]
+			val1 := int(fullBytecode[pc])
+			val2 := int(fullBytecode[pc+1])
+			pc += 2 // advance by 2 bytes (total size 3 - 1 opcode)
 
 			for val := val1; val <= val2; val++ {
 				capIdx := 2 * val
@@ -1636,8 +1737,8 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			}
 
 		case OpRange, OpRangeI:
-			n := int(cutils.GetU16(pc))
-			pc = pc[2:]
+			n := int(cutils.GetU16(fullBytecode[pc:pc+2]))
+			pc += 2
 
 			if len(*cptr) == 0 {
 				goto backtrack
@@ -1649,12 +1750,12 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			}
 
 			// Binary search in ranges
-			low := cutils.GetU16(pc)
+			low := cutils.GetU16(fullBytecode[pc:pc+2])
 			if uint16(c) < low {
 				goto backtrack
 			}
 
-			high := cutils.GetU16(pc[(n-1)*4+2:])
+			high := cutils.GetU16(fullBytecode[pc + (n-1)*4 + 2 : pc + (n-1)*4 + 4])
 			if uint16(c) > high {
 				goto backtrack
 			}
@@ -1664,8 +1765,8 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			found := false
 			for lo <= hi {
 				mid := (lo + hi) / 2
-				low = cutils.GetU16(pc[mid*4:])
-				high = cutils.GetU16(pc[mid*4+2:])
+				low = cutils.GetU16(fullBytecode[pc + mid*4 : pc + mid*4 + 2])
+				high = cutils.GetU16(fullBytecode[pc + mid*4 + 2 : pc + mid*4 + 4])
 				if uint16(c) < low {
 					hi = mid - 1
 				} else if uint16(c) > high {
@@ -1680,11 +1781,11 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 				goto backtrack
 			}
 
-			pc = pc[n*4:]
+			pc += n*4
 
 		case OpRange32, OpRange32I:
-			n := int(cutils.GetU16(pc))
-			pc = pc[2:]
+			n := int(cutils.GetU16(fullBytecode[pc:pc+2]))
+			pc += 2
 
 			if len(*cptr) == 0 {
 				goto backtrack
@@ -1695,28 +1796,32 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 				c = quickunicode.LRECanonicalize(c, ctx.isUnicode)
 			}
 
-			low := cutils.GetU32(pc)
+			low := cutils.GetU32(fullBytecode[pc:pc+4])
 			if c < low {
 				goto backtrack
 			}
 
-			high := cutils.GetU32(pc[(n-1)*8+4:])
+			high := cutils.GetU32(fullBytecode[pc + (n-1)*8 +4 : pc + (n-1)*8 +8])
 			if c > high {
 				goto backtrack
 			}
 
-			pc = pc[n*8:]
+			pc += n*8
 
 		case OpLookahead, OpNegativeLookahead:
-			offset := int(cutils.GetU32(pc))
-			pc = pc[4:]
+			// Lookahead opcodes are size 5 bytes: 1 byte opcode +4 byte signed offset
+			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
+			pc +=4 // advance past operand
 
 			// Save state
-			target := pc[offset:]
+			targetPc := pc + int(offset)
+			if targetPc <0 || targetPc > bytecodeLen {
+				goto backtrack
+			}
 			savedCptr := *cptr
 
 			// Execute lookahead
-			result := lreExecBacktrack(ctx, capture, target, cptr)
+			result := lreExecBacktrack(ctx, capture, fullBytecode, targetPc, cptr)
 
 			if (op == OpLookahead && result != RetMatch) ||
 				(op == OpNegativeLookahead && result == RetMatch) {
@@ -1761,8 +1866,8 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, pc []byte, cptr *[]byt
 			}
 
 		case OpBackReference, OpBackReferenceI:
-			n := int(pc[0])
-			pc = pc[1:]
+			n := int(fullBytecode[pc])
+			pc += 1
 
 			// Simplified backreference handling
 			if n >= ctx.captureCount {
