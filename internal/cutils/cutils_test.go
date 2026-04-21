@@ -1,0 +1,211 @@
+package cutils
+
+import (
+	"math"
+	"testing"
+)
+
+func TestMinInt(t *testing.T) {
+	if MinInt(3, 5) != 3 {
+		t.Error("MinInt failed")
+	}
+	if MinInt(5, 3) != 3 {
+		t.Error("MinInt failed")
+	}
+	if MinInt(-1, -5) != -5 {
+		t.Error("MinInt failed")
+	}
+}
+
+func TestMaxInt(t *testing.T) {
+	if MaxInt(3, 5) != 5 {
+		t.Error("MaxInt failed")
+	}
+	if MaxInt(5, 3) != 5 {
+		t.Error("MaxInt failed")
+	}
+	if MaxInt(-1, -5) != -1 {
+		t.Error("MaxInt failed")
+	}
+}
+
+func TestPStrcpy(t *testing.T) {
+	buf := make([]byte, 10)
+	PStrcpy(buf, "hello")
+	if string(buf[:5]) != "hello" || buf[5] != 0 {
+		t.Error("PStrcpy failed")
+	}
+	PStrcpy(buf, "this is a long string")
+	if string(buf[:9]) != "this is a" || buf[9] != 0 {
+		t.Error("PStrcpy truncation failed")
+	}
+}
+
+func TestPStrcat(t *testing.T) {
+	buf := make([]byte, 10)
+	PStrcpy(buf, "hello")
+	PStrcat(buf, " world")
+	if string(buf[:9]) != "hello wor" || buf[9] != 0 {
+		t.Error("PStrcat failed")
+	}
+}
+
+func TestStrStart(t *testing.T) {
+	ok, rem := StrStart("hello world", "hello")
+	if !ok || rem != " world" {
+		t.Error("StrStart failed")
+	}
+	ok, rem = StrStart("hello", "world")
+	if ok || rem != "hello" {
+		t.Error("StrStart failed for non-matching prefix")
+	}
+}
+
+func TestHasSuffix(t *testing.T) {
+	if !HasSuffix("hello world", "world") {
+		t.Error("HasSuffix failed for matching suffix")
+	}
+	if HasSuffix("hello world", "hello") {
+		t.Error("HasSuffix failed for non-matching suffix")
+	}
+}
+
+func TestBswap16(t *testing.T) {
+	if Bswap16(0x1234) != 0x3412 {
+		t.Error("Bswap16 failed")
+	}
+}
+
+func TestBswap32(t *testing.T) {
+	if Bswap32(0x12345678) != 0x78563412 {
+		t.Error("Bswap32 failed")
+	}
+}
+
+func TestBswap64(t *testing.T) {
+	if Bswap64(0x123456789abcdef0) != 0xf0debc9a78563412 {
+		t.Error("Bswap64 failed")
+	}
+}
+
+func TestDynBuf(t *testing.T) {
+	db := NewDynBuf()
+	defer db.Free()
+
+	if err := db.PutStr("hello"); err != nil {
+		t.Fatal(err)
+	}
+	if db.String() != "hello" {
+		t.Error("DynBuf PutStr failed")
+	}
+
+	if err := db.PutC(' '); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutStr("world"); err != nil {
+		t.Fatal(err)
+	}
+	if db.String() != "hello world" {
+		t.Error("DynBuf PutC failed")
+	}
+
+	if err := db.Printf(" %d", 123); err != nil {
+		t.Fatal(err)
+	}
+	if db.String() != "hello world 123" {
+		t.Error("DynBuf Printf failed")
+	}
+}
+
+func TestUnicodeToUTF8(t *testing.T) {
+	buf := make([]byte, 6)
+	n := UnicodeToUTF8(buf, 0x41) // 'A'
+	if n != 1 || buf[0] != 0x41 {
+		t.Error("UnicodeToUTF8 failed for ASCII")
+	}
+
+	n = UnicodeToUTF8(buf, 0x20AC) // Euro sign
+	if n != 3 || buf[0] != 0xe2 || buf[1] != 0x82 || buf[2] != 0xac {
+		t.Error("UnicodeToUTF8 failed for Euro sign")
+	}
+}
+
+func TestUnicodeFromUTF8(t *testing.T) {
+	buf := []byte{0x41, 0xe2, 0x82, 0xac, 0xc3, 0xa9}
+	r, n := UnicodeFromUTF8(buf, 6)
+	if r != 0x41 || n != 1 {
+		t.Error("UnicodeFromUTF8 failed for ASCII")
+	}
+
+	r, n = UnicodeFromUTF8(buf[1:], 5)
+	if r != 0x20AC || n != 3 {
+		t.Error("UnicodeFromUTF8 failed for Euro sign")
+	}
+
+	r, n = UnicodeFromUTF8(buf[4:], 2)
+	if r != 0xe9 || n != 2 {
+		t.Error("UnicodeFromUTF8 failed for e acute")
+	}
+}
+
+func TestFromHex(t *testing.T) {
+	if FromHex('0') != 0 || FromHex('9') != 9 {
+		t.Error("FromHex failed for digits")
+	}
+	if FromHex('A') != 10 || FromHex('F') != 15 {
+		t.Error("FromHex failed for uppercase")
+	}
+	if FromHex('a') != 10 || FromHex('f') != 15 {
+		t.Error("FromHex failed for lowercase")
+	}
+	if FromHex('G') != -1 {
+		t.Error("FromHex failed for invalid character")
+	}
+}
+
+func TestFP16(t *testing.T) {
+	f := 3.1415926535
+	fp16 := ToFP16(f)
+	f2 := FromFP16(fp16)
+	if math.Abs(f2-f) > 0.01 {
+		t.Error("FP16 conversion failed")
+	}
+
+	nan := math.NaN()
+	fp16 = ToFP16(nan)
+	if !IsFP16NaN(fp16) {
+		t.Error("FP16 NaN detection failed")
+	}
+
+	zero := 0.0
+	fp16 = ToFP16(zero)
+	if !IsFP16Zero(fp16) {
+		t.Error("FP16 zero detection failed")
+	}
+}
+
+func TestList(t *testing.T) {
+	var head ListHead
+	head.Init()
+	if !head.Empty() {
+		t.Error("List empty check failed")
+	}
+
+	el1 := &ListHead{}
+	el2 := &ListHead{}
+
+	head.AddTail(el1)
+	if head.Empty() || head.Next != el1 || head.Prev != el1 {
+		t.Error("AddTail failed")
+	}
+
+	head.AddTail(el2)
+	if head.Next != el1 || el1.Next != el2 || el2.Prev != el1 || el2.Next == el2 {
+		t.Error("AddTail second element failed")
+	}
+
+	el1.Del()
+	if head.Next != el2 || head.Prev != el2 {
+		t.Error("Del failed")
+	}
+}
