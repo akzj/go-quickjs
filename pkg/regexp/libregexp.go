@@ -1508,6 +1508,7 @@ func lreParseEscape(p *[]byte, allowUTF16 int) (int, error) {
 type execContext struct {
 	cbuf             []byte
 	cbufEnd          []byte
+	cbufStartIndex   int  // Original starting position index
 	cbufType         int // 0 = 8-bit, 1 = 16-bit, 2 = 16-bit UTF-16
 	captureCount     int
 	isUnicode        bool
@@ -1551,6 +1552,7 @@ func lreExec(capture [][]byte, bc []byte, cbuf []byte, cindex int, clen int, cbu
 	ctx.isUnicode = isUnicode
 	ctx.interruptCounter = InterruptCounterInit
 	ctx.opaque = opaque
+	ctx.cbufStartIndex = cindex // Track starting position (always 0 for initial call)
 
 	ctx.stackBuf = ctx.staticStack[:]
 	ctx.stackSize = len(ctx.staticStack)
@@ -1559,10 +1561,10 @@ func lreExec(capture [][]byte, bc []byte, cbuf []byte, cindex int, clen int, cbu
 
 	// Execute
 	pcOffset := 0
-	return lreExecBacktrack(&ctx, capture, bc, HeaderLen + pcOffset, &cptr)
+	return lreExecBacktrack(&ctx, capture, bc, HeaderLen + pcOffset, &cptr, cbuf)
 }
 
-func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, startPc int, cptr *[]byte) int {
+func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, startPc int, cptr *[]byte, cbuf []byte) int {
 	sp := 0
 	bp := 0
 	pc := startPc
@@ -1650,30 +1652,48 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 			}
 
 		case OpLineStart, OpLineStartM:
-			if len(*cptr) > 0 {
-				if op == OpLineStart {
+			// OpLineStart: match at beginning of string (cptr at start)
+			// OpLineStartM: match at beginning of string, or after line terminator in multiline mode
+			if op == OpLineStart {
+				// Single-line mode: match only at absolute start of string
+				// We check if cptr is at the original starting position (start of string)
+				currentPos := len(cbuf) - len(*cptr)
+				if currentPos != ctx.cbufStartIndex {
+					// Not at start of original string
 					goto backtrack
 				}
-				// In multiline mode, check if previous char is line terminator
-				if len(*cptr) > 0 {
-					prev := peekPrevChar(cptr, ctx.cbufType)
-					if !isLineTerminator(prev) {
-						goto backtrack
-					}
+			} else {
+				// Multiline mode: match at start of string or after line terminator
+				currentPos := len(cbuf) - len(*cptr)
+				if currentPos == ctx.cbufStartIndex {
+					// At start of string
+					continue
+				}
+				// Check if previous char is line terminator
+				prev := peekPrevChar(cptr, ctx.cbufType)
+				if !isLineTerminator(prev) {
+					goto backtrack
 				}
 			}
 
 		case OpLineEnd, OpLineEndM:
-			if len(*cptr) == 0 {
-				if op == OpLineEnd {
+			// OpLineEnd: match at end of string (no more characters)
+			// OpLineEndM: match at end of string, or before line terminator in multiline mode
+			if op == OpLineEnd {
+				// Single-line mode: match only at absolute end of string
+				if len(*cptr) != 0 {
 					goto backtrack
 				}
-				// In multiline mode, current char is line terminator
-				if len(*cptr) > 0 {
-					c := peekChar(cptr, ctx.cbufType)
-					if !isLineTerminator(c) {
-						goto backtrack
-					}
+			} else {
+				// Multiline mode: match at end of string, or before line terminator
+				if len(*cptr) == 0 {
+					// End of string is always a line end
+					continue
+				}
+				// Check if current char is line terminator
+				c := peekChar(cptr, ctx.cbufType)
+				if !isLineTerminator(c) {
+					goto backtrack
 				}
 			}
 
@@ -1821,7 +1841,7 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 			savedCptr := *cptr
 
 			// Execute lookahead
-			result := lreExecBacktrack(ctx, capture, fullBytecode, targetPc, cptr)
+			result := lreExecBacktrack(ctx, capture, fullBytecode, targetPc, cptr, cbuf)
 
 			if (op == OpLookahead && result != RetMatch) ||
 				(op == OpNegativeLookahead && result == RetMatch) {
