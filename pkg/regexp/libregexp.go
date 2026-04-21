@@ -397,22 +397,22 @@ func (bb *byteBuffer) insert(pos, len int) int {
 		return -1
 	}
 	if newSize > bb.allocatedSize {
-		size := bb.allocatedSize + bb.allocatedSize/2
-		if size < bb.allocatedSize {
+		newAlloc := bb.allocatedSize + bb.allocatedSize/2
+		if newAlloc < bb.allocatedSize {
 			bb.error = true
 			return -1
 		}
-		if size < newSize {
-			size = newSize
+		if newAlloc < newSize {
+			newAlloc = newSize
 		}
-		newBuf := make([]byte, size)
+		newBuf := make([]byte, newAlloc)
 		if bb.buf != nil {
 			copy(newBuf, bb.buf)
 		}
 		bb.buf = newBuf
-		bb.allocatedSize = size
+		bb.allocatedSize = newAlloc
 	}
-	// Move existing data
+	// Move existing data to make room
 	copy(bb.buf[pos+len:], bb.buf[pos:])
 	bb.size = newSize
 	return 0
@@ -1319,26 +1319,48 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 		return 0
 	}
 
+	quantMin := 0
+	quantMax := 1 // default for ? is {0,1}
+	isGreedy := true
+
 	switch s.bufPtr[0] {
-	case '*', '+', '?':
-		// Consume quantifier token
+	case '*':
+		// Zero or more: {0, max_int}
 		s.bufPtr = s.bufPtr[1:]
+		quantMin = 0
+		quantMax = 0x7FFFFFFF // INT32_MAX
+	case '+':
+		// One or more: {1, max_int}
+		s.bufPtr = s.bufPtr[1:]
+		quantMin = 1
+		quantMax = 0x7FFFFFFF
+	case '?':
+		// Zero or one: {0, 1}
+		s.bufPtr = s.bufPtr[1:]
+		quantMin = 0
+		quantMax = 1
 	case '{':
 		// Parse {n,m} quantifier
 		s.bufPtr = s.bufPtr[1:]
-		_, err := s.parseDigits(true)
+		minVal, err := s.parseDigits(true)
 		if err != nil {
 			s.errorMsg = "invalid quantifier"
 			return -1
 		}
+		quantMin = minVal
+		quantMax = minVal
+
 		if len(s.bufPtr) > 0 && s.bufPtr[0] == ',' {
 			s.bufPtr = s.bufPtr[1:]
 			if len(s.bufPtr) > 0 && s.bufPtr[0] >= '0' && s.bufPtr[0] <= '9' {
-				_, err = s.parseDigits(true)
+				maxVal, err := s.parseDigits(true)
 				if err != nil {
 					s.errorMsg = "invalid quantifier"
 					return -1
 				}
+				quantMax = maxVal
+			} else {
+				quantMax = 0x7FFFFFFF // {n,} means unlimited
 			}
 		}
 		if len(s.bufPtr) == 0 || s.bufPtr[0] != '}' {
@@ -1353,6 +1375,71 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 	// Check for non-greedy
 	if len(s.bufPtr) > 0 && s.bufPtr[0] == '?' {
 		s.bufPtr = s.bufPtr[1:]
+		isGreedy = false
+	}
+
+	// Emit quantifier bytecode - insert BEFORE the atom at lastAtomStart
+	atomLen := s.byteCode.len() - lastAtomStart
+
+	if quantMax == 0 {
+		// No matches allowed, remove the atom bytecode
+		s.byteCode.size = lastAtomStart
+		return 0
+	}
+
+	// Simple case: exactly one match (no quantifier needed)
+	if quantMin == 1 && quantMax == 1 {
+		return 0
+	}
+
+	// Insert quantifier bytecode at lastAtomStart (BEFORE the atom)
+	// This is how QuickJS does it - insert the split/goto structure before the atom
+	if s.byteCode.insert(lastAtomStart, 5) != 0 {
+		s.errorMsg = "out of memory"
+		return -1
+	}
+	bc := s.byteCode.bytes()
+
+	if quantMax == 0x7FFFFFFF { // Unlimited max
+		if quantMin == 0 {
+			// * quantifier: split (skip ahead) -> atom -> goto (loop back)
+			// For greedy: REOP_split_goto_first tries skip first, then atom
+			splitOp := OpSplitGotoFirst
+			if !isGreedy {
+				splitOp = OpSplitNextFirst
+			}
+			// Insert split at lastAtomStart
+			bc[lastAtomStart] = byte(splitOp)
+			// Offset = atom_len + goto_size (jump past atom + goto to get to next pattern)
+			splitOffset := int32(atomLen + 5)
+			binary.LittleEndian.PutUint32(bc[lastAtomStart+1:], uint32(splitOffset))
+
+			// Emit goto after atom that jumps back to lastAtomStart
+			// Store the raw target position (like QuickJS C does)
+			gotoTarget := int32(lastAtomStart)
+			s.emitGoto(OpGoto, gotoTarget)
+		} else if quantMin == 1 {
+			// + quantifier: emit goto to loop back
+			// For greedy: REOP_split_next_first - greedy (REOP_split_next_first for greedy)
+			splitOp := OpSplitNextFirst
+			if !isGreedy {
+				splitOp = OpSplitGotoFirst
+			}
+			// Emit goto that jumps back to lastAtomStart
+			gotoTarget := int32(lastAtomStart)
+			s.emitGoto(splitOp, gotoTarget)
+		}
+	} else if quantMax == 1 {
+		// ? quantifier: split (skip atom)
+		splitOp := OpSplitGotoFirst
+		if !isGreedy {
+			splitOp = OpSplitNextFirst
+		}
+		// Insert split at lastAtomStart
+		bc[lastAtomStart] = byte(splitOp)
+		// Offset = jump past atom to get to next pattern
+		splitOffset := int32(atomLen)
+		binary.LittleEndian.PutUint32(bc[lastAtomStart+1:], uint32(splitOffset))
 	}
 
 	return 0
