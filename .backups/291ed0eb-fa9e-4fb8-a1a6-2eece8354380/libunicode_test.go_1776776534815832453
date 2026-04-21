@@ -1,6 +1,9 @@
 package unicode
 
-import "testing"
+import (
+	"testing"
+	"unicode"
+)
 
 func TestIsSpaceByte(t *testing.T) {
 	testCases := []struct {
@@ -235,19 +238,16 @@ func TestCROp(t *testing.T) {
 	defer CRFree(&cr)
 
 	// Test union: [a-f] U [d-k] = [a-k]
-	// [a-f] = [97, 103) = points [97, 103)
-	// [d-k] = [100, 108) = points [100, 108)
-	// Union = [97, 108) = points [97, 108)
-	aPt := []uint32{uint32('a'), uint32('g')}
-	bPt := []uint32{uint32('d'), uint32('l') + 1}
+	aPt := []uint32{'a', 'g'} // [a, f]
+	bPt := []uint32{'d', 'l'} // [d, k]
 
 	if ret := CROp(&cr, aPt, 2, bPt, 2, CR_OP_UNION); ret != 0 {
 		t.Errorf("CROp UNION returned %d, want 0", ret)
 	}
 
-	// Result should be [a, l+1) = [97, 108]
-	if cr.Len != 2 || cr.Points[0] != uint32('a') || cr.Points[1] != uint32('l')+1 {
-		t.Errorf("CROp UNION result = %v, want [97, 108]", cr.Points[:cr.Len])
+	// Result should be [a, l] (merged)
+	if cr.Len != 2 || cr.Points[0] != 'a' || cr.Points[1] != 'l'+1 {
+		t.Errorf("CROp UNION result = %v, want [a, l+1)", cr.Points[:cr.Len])
 	}
 }
 

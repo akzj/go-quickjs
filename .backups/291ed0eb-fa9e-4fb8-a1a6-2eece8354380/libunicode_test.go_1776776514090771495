@@ -1,0 +1,135 @@
+package unicode
+
+import (
+	"testing"
+	"unicode"
+)
+
+func TestIsSpaceByte(t *testing.T) {
+	testCases := []struct {
+		c   uint8
+		res bool
+	}{
+		{' ', true},
+		{'\t', true},
+		{'\n', true},
+		{'\r', true},
+		{'a', false},
+		{'0', false},
+		{'_', false},
+		{'$', false},
+	}
+
+	for _, tc := range testCases {
+		if got := IsSpaceByte(tc.c); got != tc.res {
+			t.Errorf("IsSpaceByte(%q) = %v, want %v", tc.c, got, tc.res)
+		}
+	}
+}
+
+func TestIsIDStartByte(t *testing.T) {
+	testCases := []struct {
+		c   uint8
+		res bool
+	}{
+		{'a', true},
+		{'Z', true},
+		{'_', true},
+		{'$', true},
+		{'0', false},
+		{' ', false},
+		{'-', false},
+	}
+
+	for _, tc := range testCases {
+		if got := IsIDStartByte(tc.c); got != tc.res {
+			t.Errorf("IsIDStartByte(%q) = %v, want %v", tc.c, got, tc.res)
+		}
+	}
+}
+
+func TestIsIDContinueByte(t *testing.T) {
+	testCases := []struct {
+		c   uint8
+		res bool
+	}{
+		{'a', true},
+		{'Z', true},
+		{'_', true},
+		{'$', true},
+		{'0', true},
+		{'9', true},
+		{' ', false},
+		{'-', false},
+	}
+
+	for _, tc := range testCases {
+		if got := IsIDContinueByte(tc.c); got != tc.res {
+			t.Errorf("IsIDContinueByte(%q) = %v, want %v", tc.c, got, tc.res)
+		}
+	}
+}
+
+func TestIsSpace(t *testing.T) {
+	testCases := []struct {
+		c   uint32
+		res bool
+	}{
+		{' ', true},
+		{'\t', true},
+		{0x00A0, true}, // non-breaking space
+		{'a', false},
+		{0x4E00, false}, // Chinese character
+	}
+
+	for _, tc := range testCases {
+		if got := IsSpace(tc.c); got != tc.res {
+			t.Errorf("IsSpace(%#U) = %v, want %v", tc.c, got, tc.res)
+		}
+	}
+}
+
+func TestJSIsIdentFirst(t *testing.T) {
+	testCases := []struct {
+		c   uint32
+		res bool
+	}{
+		{'a', true},
+		{'Z', true},
+		{'_', true},
+		{'$', true},
+		{'0', false},
+		{0x4E00, true}, // Chinese character (unicode letter)
+		{0x3042, true}, // Hiragana
+		{0x200C, false}, // ZWNJ
+	}
+
+	for _, tc := range testCases {
+		if got := JSIsIdentFirst(tc.c); got != tc.res {
+			t.Errorf("JSIsIdentFirst(%#U) = %v, want %v", tc.c, got, tc.res)
+		}
+	}
+}
+
+func TestJSIsIdentNext(t *testing.T) {
+	testCases := []struct {
+		c   uint32
+		res bool
+	}{
+		{'a', true},
+		{'Z', true},
+		{'_', true},
+		{'$', true},
+		{'0', true},
+		{0x4E00, true}, // Chinese character
+		{0x200C, true}, // ZWNJ allowed in continue
+		{0x200D, true}, // ZWJ allowed in continue
+		{' ', false},
+	}
+
+	for _, tc := range testCases {
+		if got := JSIsIdentNext(tc.c); got != tc.res {
+			t.Errorf("JSIsIdentNext(%#U) = %v, want %v", tc.c, got, tc.res)
+		}
+	}
+}

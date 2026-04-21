@@ -1,0 +1,642 @@
+// Package cutils implements core utilities ported from QuickJS C source
+package cutils
+
+import (
+	"encoding/binary"
+	"fmt"
+	"math"
+	"sort"
+	"unsafe"
+)
+
+const (
+	// UTF8CharLenMax is the maximum number of bytes in a UTF-8 character
+	UTF8CharLenMax = 6
+)
+
+// MinInt returns the minimum of two integers
+func MinInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// MaxInt returns the maximum of two integers
+func MaxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// MinUint32 returns the minimum of two uint32 values
+func MinUint32(a, b uint32) uint32 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// MaxUint32 returns the maximum of two uint32 values
+func MaxUint32(a, b uint32) uint32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// MinInt64 returns the minimum of two int64 values
+func MinInt64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// MaxInt64 returns the maximum of two int64 values
+func MaxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// PStrcpy copies a string to a buffer with truncation, null terminating the result
+func PStrcpy(buf []byte, str string) {
+	bufSize := len(buf)
+	if bufSize <= 0 {
+		return
+	}
+	n := MinInt(len(str), bufSize-1)
+	copy(buf[:n], str)
+	buf[n] = 0
+}
+
+// PStrcat appends a string to a buffer with truncation, null terminating the result
+func PStrcat(buf []byte, s string) []byte {
+	lenBuf := 0
+	for lenBuf < len(buf) && buf[lenBuf] != 0 {
+		lenBuf++
+	}
+	if lenBuf < len(buf) {
+		PStrcpy(buf[lenBuf:], s)
+	}
+	return buf
+}
+
+// StrStart checks if str starts with val, returns true and the remaining part if it does
+func StrStart(str, val string) (bool, string) {
+	if len(str) < len(val) {
+		return false, str
+	}
+	for i := 0; i < len(val); i++ {
+		if str[i] != val[i] {
+			return false, str
+		}
+	}
+	return true, str[len(val):]
+}
+
+// HasSuffix checks if str ends with suffix
+func HasSuffix(str, suffix string) bool {
+	if len(str) < len(suffix) {
+		return false
+	}
+	return str[len(str)-len(suffix):] == suffix
+}
+
+// Clz32 returns the number of leading zero bits in a uint32, undefined if a is 0
+func Clz32(a uint32) int {
+	return 31 - int(math.Log2(float64(a)))
+}
+
+// Clz64 returns the number of leading zero bits in a uint64, undefined if a is 0
+func Clz64(a uint64) int {
+	return 63 - int(math.Log2(float64(a)))
+}
+
+// Ctz32 returns the number of trailing zero bits in a uint32, undefined if a is 0
+func Ctz32(a uint32) int {
+	if a == 0 {
+		return 32
+	}
+	n := 0
+	for (a & 1) == 0 {
+		n++
+		a >>= 1
+	}
+	return n
+}
+
+// Ctz64 returns the number of trailing zero bits in a uint64, undefined if a is 0
+func Ctz64(a uint64) int {
+	if a == 0 {
+		return 64
+	}
+	n := 0
+	for (a & 1) == 0 {
+		n++
+		a >>= 1
+	}
+	return n
+}
+
+// GetU64 reads a little-endian uint64 from a byte slice
+func GetU64(tab []byte) uint64 {
+	return binary.LittleEndian.Uint64(tab)
+}
+
+// GetI64 reads a little-endian int64 from a byte slice
+func GetI64(tab []byte) int64 {
+	return int64(binary.LittleEndian.Uint64(tab))
+}
+
+// PutU64 writes a little-endian uint64 to a byte slice
+func PutU64(tab []byte, val uint64) {
+	binary.LittleEndian.PutUint64(tab, val)
+}
+
+// GetU32 reads a little-endian uint32 from a byte slice
+func GetU32(tab []byte) uint32 {
+	return binary.LittleEndian.Uint32(tab)
+}
+
+// GetI32 reads a little-endian int32 from a byte slice
+func GetI32(tab []byte) int32 {
+	return int32(binary.LittleEndian.Uint32(tab))
+}
+
+// PutU32 writes a little-endian uint32 to a byte slice
+func PutU32(tab []byte, val uint32) {
+	binary.LittleEndian.PutUint32(tab, val)
+}
+
+// GetU16 reads a little-endian uint16 from a byte slice
+func GetU16(tab []byte) uint16 {
+	return binary.LittleEndian.Uint16(tab)
+}
+
+// GetI16 reads a little-endian int16 from a byte slice
+func GetI16(tab []byte) int16 {
+	return int16(binary.LittleEndian.Uint16(tab))
+}
+
+// PutU16 writes a little-endian uint16 to a byte slice
+func PutU16(tab []byte, val uint16) {
+	binary.LittleEndian.PutUint16(tab, val)
+}
+
+// GetU8 reads a uint8 from a byte slice
+func GetU8(tab []byte) uint8 {
+	return tab[0]
+}
+
+// GetI8 reads an int8 from a byte slice
+func GetI8(tab []byte) int8 {
+	return int8(tab[0])
+}
+
+// PutU8 writes a uint8 to a byte slice
+func PutU8(tab []byte, val uint8) {
+	tab[0] = val
+}
+
+// Bswap16 swaps the bytes of a uint16
+func Bswap16(x uint16) uint16 {
+	return (x >> 8) | (x << 8)
+}
+
+// Bswap32 swaps the bytes of a uint32
+func Bswap32(v uint32) uint32 {
+	return ((v & 0xff000000) >> 24) | ((v & 0x00ff0000) >> 8) |
+		((v & 0x0000ff00) << 8) | ((v & 0x000000ff) << 24)
+}
+
+// Bswap64 swaps the bytes of a uint64
+func Bswap64(v uint64) uint64 {
+	return ((v & ((uint64(0xff) << (7 * 8)))) >> (7 * 8)) |
+		((v & ((uint64(0xff) << (6 * 8)))) >> (5 * 8)) |
+		((v & ((uint64(0xff) << (5 * 8)))) >> (3 * 8)) |
+		((v & ((uint64(0xff) << (4 * 8)))) >> (1 * 8)) |
+		((v & ((uint64(0xff) << (3 * 8)))) << (1 * 8)) |
+		((v & ((uint64(0xff) << (2 * 8)))) << (3 * 8)) |
+		((v & ((uint64(0xff) << (1 * 8)))) << (5 * 8)) |
+		((v & ((uint64(0xff) << (0 * 8)))) << (7 * 8))
+}
+
+// DynBuf is a dynamic buffer implementation
+type DynBuf struct {
+	buf            []byte
+	size           int
+	allocatedSize  int
+	error          bool
+	reallocFunc    func(opaque interface{}, ptr []byte, size int) []byte
+	opaque         interface{}
+}
+
+// NewDynBuf creates a new dynamic buffer with default allocator
+func NewDynBuf() *DynBuf {
+	return &DynBuf{
+		reallocFunc: defaultRealloc,
+	}
+}
+
+func defaultRealloc(opaque interface{}, ptr []byte, size int) []byte {
+	if size == 0 {
+		return nil
+	}
+	newBuf := make([]byte, size)
+	if ptr != nil {
+		copy(newBuf, ptr)
+	}
+	return newBuf
+}
+
+// Claim allocates len more bytes in the buffer, returns error if allocation fails
+func (d *DynBuf) Claim(len int) error {
+	if d.error {
+		return fmt.Errorf("buffer already in error state")
+	}
+	newSize := d.size + len
+	if newSize < d.size {
+		d.error = true
+		return fmt.Errorf("overflow")
+	}
+	if newSize > d.allocatedSize {
+		size := d.allocatedSize + (d.allocatedSize / 2)
+		if size < d.allocatedSize {
+			d.error = true
+			return fmt.Errorf("overflow")
+		}
+		if size < newSize {
+			size = newSize
+		}
+		newBuf := d.reallocFunc(d.opaque, d.buf, size)
+		if newBuf == nil {
+			d.error = true
+			return fmt.Errorf("allocation failed")
+		}
+		d.buf = newBuf
+		d.allocatedSize = size
+	}
+	return nil
+}
+
+// Put writes len bytes of data to the buffer
+func (d *DynBuf) Put(data []byte) error {
+	len := len(data)
+	if (d.allocatedSize - d.size) < len {
+		if err := d.Claim(len); err != nil {
+			return err
+		}
+	}
+	copy(d.buf[d.size:], data)
+	d.size += len
+	return nil
+}
+
+// PutSelf copies len bytes from offset in the buffer to the end
+func (d *DynBuf) PutSelf(offset, len int) error {
+	if (d.allocatedSize - d.size) < len {
+		if err := d.Claim(len); err != nil {
+			return err
+		}
+	}
+	copy(d.buf[d.size:], d.buf[offset:offset+len])
+	d.size += len
+	return nil
+}
+
+// PutStr writes a string to the buffer
+func (d *DynBuf) PutStr(str string) error {
+	return d.Put([]byte(str))
+}
+
+// PutC writes a single byte to the buffer
+func (d *DynBuf) PutC(c byte) error {
+	if (d.allocatedSize - d.size) < 1 {
+		if err := d.Claim(1); err != nil {
+			return err
+		}
+	}
+	d.buf[d.size] = c
+	d.size += 1
+	return nil
+}
+
+// PutU16 writes a little-endian uint16 to the buffer
+func (d *DynBuf) PutU16(val uint16) error {
+	if (d.allocatedSize - d.size) < 2 {
+		if err := d.Claim(2); err != nil {
+			return err
+		}
+	}
+	PutU16(d.buf[d.size:], val)
+	d.size += 2
+	return nil
+}
+
+// PutU32 writes a little-endian uint32 to the buffer
+func (d *DynBuf) PutU32(val uint32) error {
+	if (d.allocatedSize - d.size) < 4 {
+		if err := d.Claim(4); err != nil {
+			return err
+		}
+	}
+	PutU32(d.buf[d.size:], val)
+	d.size += 4
+	return nil
+}
+
+// PutU64 writes a little-endian uint64 to the buffer
+func (d *DynBuf) PutU64(val uint64) error {
+	if (d.allocatedSize - d.size) < 8 {
+		if err := d.Claim(8); err != nil {
+			return err
+		}
+	}
+	PutU64(d.buf[d.size:], val)
+	d.size += 8
+	return nil
+}
+
+// Printf writes a formatted string to the buffer
+func (d *DynBuf) Printf(format string, args ...interface{}) error {
+	str := fmt.Sprintf(format, args...)
+	return d.PutStr(str)
+}
+
+// Bytes returns the contents of the buffer as a byte slice
+func (d *DynBuf) Bytes() []byte {
+	return d.buf[:d.size]
+}
+
+// String returns the contents of the buffer as a string
+func (d *DynBuf) String() string {
+	return string(d.buf[:d.size])
+}
+
+// Error returns true if the buffer is in error state
+func (d *DynBuf) Error() bool {
+	return d.error
+}
+
+// Free resets the buffer and frees its memory
+func (d *DynBuf) Free() {
+	d.buf = nil
+	d.size = 0
+	d.allocatedSize = 0
+	d.error = false
+}
+
+// UnicodeToUTF8 converts a unicode code point to UTF-8, returns the number of bytes written
+func UnicodeToUTF8(buf []byte, c uint32) int {
+	if c < 0x80 {
+		buf[0] = byte(c)
+		return 1
+	}
+	if c < 0x800 {
+		buf[0] = byte(c>>6) | 0xc0
+		buf[1] = byte(c&0x3f) | 0x80
+		return 2
+	}
+	if c < 0x10000 {
+		buf[0] = byte(c>>12) | 0xe0
+		buf[1] = byte((c>>6)&0x3f) | 0x80
+		buf[2] = byte(c&0x3f) | 0x80
+		return 3
+	}
+	if c < 0x00200000 {
+		buf[0] = byte(c>>18) | 0xf0
+		buf[1] = byte((c>>12)&0x3f) | 0x80
+		buf[2] = byte((c>>6)&0x3f) | 0x80
+		buf[3] = byte(c&0x3f) | 0x80
+		return 4
+	}
+	if c < 0x04000000 {
+		buf[0] = byte(c>>24) | 0xf8
+		buf[1] = byte((c>>18)&0x3f) | 0x80
+		buf[2] = byte((c>>12)&0x3f) | 0x80
+		buf[3] = byte((c>>6)&0x3f) | 0x80
+		buf[4] = byte(c&0x3f) | 0x80
+		return 5
+	}
+	if c < 0x80000000 {
+		buf[0] = byte(c>>30) | 0xfc
+		buf[1] = byte((c>>24)&0x3f) | 0x80
+		buf[2] = byte((c>>18)&0x3f) | 0x80
+		buf[3] = byte((c>>12)&0x3f) | 0x80
+		buf[4] = byte((c>>6)&0x3f) | 0x80
+		buf[5] = byte(c&0x3f) | 0x80
+		return 6
+	}
+	return 0
+}
+
+var utf8MinCode = []uint32{0x80, 0x800, 0x10000, 0x00200000, 0x04000000}
+var utf8FirstCodeMask = []byte{0x1f, 0xf, 0x7, 0x3, 0x1}
+
+// UnicodeFromUTF8 reads a unicode code point from UTF-8, returns -1 if invalid
+func UnicodeFromUTF8(p []byte, maxLen int) (rune, int) {
+	if maxLen < 1 {
+		return -1, 0
+	}
+	c := uint32(p[0])
+	if c < 0x80 {
+		return rune(c), 1
+	}
+	var l int
+	switch {
+	case c >= 0xc2 && c <= 0xdf:
+		l = 1
+	case c >= 0xe0 && c <= 0xef:
+		l = 2
+	case c >= 0xf0 && c <= 0xf7:
+		l = 3
+	case c >= 0xf8 && c <= 0xfb:
+		l = 4
+	case c >= 0xfc && c <= 0xfd:
+		l = 5
+	default:
+		return -1, 0
+	}
+	if l >= maxLen {
+		return -1, 0
+	}
+	c &= uint32(utf8FirstCodeMask[l-1])
+	for i := 0; i < l; i++ {
+		b := p[i+1]
+		if b < 0x80 || b >= 0xc0 {
+			return -1, 0
+		}
+		c = (c << 6) | uint32(b&0x3f)
+	}
+	if c < utf8MinCode[l-1] {
+		return -1, 0
+	}
+	return rune(c), l + 1
+}
+
+// IsSurrogate returns true if c is a UTF-16 surrogate
+func IsSurrogate(c uint32) bool {
+	return (c >> 11) == (0xD800 >> 11)
+}
+
+// IsHiSurrogate returns true if c is a high UTF-16 surrogate
+func IsHiSurrogate(c uint32) bool {
+	return (c >> 10) == (0xD800 >> 10)
+}
+
+// IsLoSurrogate returns true if c is a low UTF-16 surrogate
+func IsLoSurrogate(c uint32) bool {
+	return (c >> 10) == (0xDC00 >> 10)
+}
+
+// GetHiSurrogate returns the high surrogate for a unicode code point
+func GetHiSurrogate(c uint32) uint32 {
+	return (c >> 10) - (0x10000 >> 10) + 0xD800
+}
+
+// GetLoSurrogate returns the low surrogate for a unicode code point
+func GetLoSurrogate(c uint32) uint32 {
+	return (c & 0x3FF) | 0xDC00
+}
+
+// FromSurrogate combines high and low surrogates into a unicode code point
+func FromSurrogate(hi, lo uint32) uint32 {
+	return 0x10000 + 0x400*(hi-0xD800) + (lo-0xDC00)
+}
+
+// FromHex converts a hex character to its integer value, returns -1 if invalid
+func FromHex(c int) int {
+	if c >= '0' && c <= '9' {
+		return c - '0'
+	}
+	if c >= 'A' && c <= 'F' {
+		return c - 'A' + 10
+	}
+	if c >= 'a' && c <= 'f' {
+		return c - 'a' + 10
+	}
+	return -1
+}
+
+// Float64AsUint64 reinterprets a float64 as a uint64
+func Float64AsUint64(f float64) uint64 {
+	return math.Float64bits(f)
+}
+
+// Uint64AsFloat64 reinterprets a uint64 as a float64
+func Uint64AsFloat64(u uint64) float64 {
+	return math.Float64frombits(u)
+}
+
+// FromFP16 converts a 16-bit float to float64
+func FromFP16(v uint16) float64 {
+	v1 := uint32(v & 0x7fff)
+	if v1 >= 0x7c00 {
+		v1 += 0x1f8000
+	}
+	sign := uint64(v >> 15) << 63
+	mantissa := uint64(v1) << (52 - 10)
+	return Uint64AsFloat64(sign | mantissa) * math.Ldexp(1, 1008)
+}
+
+// ToFP16 converts a float64 to a 16-bit float
+func ToFP16(d float64) uint16 {
+	a := Float64AsUint64(d)
+	sgn := a >> 63
+	a &= 0x7fffffffffffffff
+	var v uint32
+	if a > 0x7ff0000000000000 {
+		v = 0x7c01
+	} else if a < 0x3f10000000000000 { // 0x1p-14
+		if a <= 0x3e60000000000000 { // 0x1p-25
+			v = 0x0000
+		} else {
+			shift := 1051 - int(a>>52)
+			a = ((uint64(1) << 52) | (a & (((uint64(1) << 52) - 1))))
+			addend := ((a >> shift) & 1) + (((uint64(1) << (shift - 1)) - 1))
+			v = uint32((a + addend) >> shift)
+		}
+	} else {
+		a -= 0x3f00000000000000
+		addend := ((a >> (52 - 10)) & 1) + (((uint64(1) << (52 - 11)) - 1))
+		v = uint32((a + addend) >> (52 - 10))
+		if v > 0x7c00 {
+			v = 0x7c00
+		}
+	}
+	return uint16(v | (sgn << 15))
+}
+
+// IsFP16NaN returns true if the 16-bit float is NaN
+func IsFP16NaN(v uint16) bool {
+	return (v & 0x7FFF) > 0x7C00
+}
+
+// IsFP16Zero returns true if the 16-bit float is zero
+func IsFP16Zero(v uint16) bool {
+	return (v & 0x7FFF) == 0
+}
+
+// RQsort is a reentrant quicksort implementation
+func RQsort(base interface{}, nmemb int, size int, cmp func(a, b interface{}, arg interface{}) int, arg interface{}) {
+	// Use Go's sort package for simplicity, which is also reentrant and performant
+	slice := make([]interface{}, nmemb)
+	for i := 0; i < nmemb; i++ {
+		ptr := unsafe.Pointer(uintptr(unsafe.Pointer(&base)) + uintptr(i*size))
+		slice[i] = ptr
+	}
+	sort.Slice(slice, func(i, j int) bool {
+		return cmp(slice[i], slice[j], arg) < 0
+	})
+	// Copy back sorted elements
+	for i := 0; i < nmemb; i++ {
+		dst := unsafe.Pointer(uintptr(unsafe.Pointer(&base)) + uintptr(i*size))
+		src := slice[i]
+		*(*unsafe.Pointer)(dst) = *(*unsafe.Pointer)(src)
+	}
+}
+
+// ListHead is a doubly linked list head
+type ListHead struct {
+	Prev *ListHead
+	Next *ListHead
+}
+
+// Init initializes a list head
+func (l *ListHead) Init() {
+	l.Prev = l
+	l.Next = l
+}
+
+// Add adds an element to the front of the list
+func (l *ListHead) Add(el *ListHead) {
+	el.Prev = l
+	el.Next = l.Next
+	l.Next.Prev = el
+	l.Next = el
+}
+
+// AddTail adds an element to the end of the list
+func (l *ListHead) AddTail(el *ListHead) {
+	el.Prev = l.Prev
+	el.Next = l
+	l.Prev.Next = el
+	l.Prev = el
+}
+
+// Del removes an element from the list
+func (l *ListHead) Del() {
+	l.Prev.Next = l.Next
+	l.Next.Prev = l.Prev
+	l.Prev = nil
+	l.Next = nil
+}
+
+// Empty returns true if the list is empty
+func (l *ListHead) Empty() bool {
+	return l.Next == l
+}
