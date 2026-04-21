@@ -1,0 +1,242 @@
+package unicode
+
+import (
+	"unicode"
+)
+
+// CONFIG_ALL_UNICODE is enabled as per original C code
+const CONFIG_ALL_UNICODE = true
+
+// LRE_CC_RES_LEN_MAX maximum length of case conversion result
+const LRE_CC_RES_LEN_MAX = 3
+
+// CharRange represents a sorted list of character intervals
+type CharRange struct {
+	Len         int // number of points, always even
+	Size        int
+	Points      []uint32 // sorted points, pairs are [start, end)
+	MemOpaque   interface{}
+	ReallocFunc func(opaque interface{}, ptr []uint32, size int) []uint32
+}
+
+// CharRangeOpEnum character range operation types
+type CharRangeOpEnum int
+
+const (
+	CR_OP_UNION CharRangeOpEnum = iota
+	CR_OP_INTER
+	CR_OP_XOR
+	CR_OP_SUB
+)
+
+// UnicodeNormalizationEnum normalization types
+type UnicodeNormalizationEnum int
+
+const (
+	UNICODE_NFC UnicodeNormalizationEnum = iota
+	UNICODE_NFD
+	UNICODE_NFKC
+	UNICODE_NFKD
+)
+
+// Character category bits
+const (
+	UNICODE_C_SPACE  = 1 << 0
+	UNICODE_C_DIGIT  = 1 << 1
+	UNICODE_C_UPPER  = 1 << 2
+	UNICODE_C_LOWER  = 1 << 3
+	UNICODE_C_UNDER  = 1 << 4
+	UNICODE_C_DOLLAR = 1 << 5
+	UNICODE_C_XDIGIT = 1 << 6
+)
+
+// lre_ctype_bits ASCII character type bits
+var lre_ctype_bits = [256]uint8{
+	// Prepopulated as per original C table
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x01, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+	0x42, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x04,
+	0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+	0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+	0x04, 0x04, 0x04, 0x00, 0x00, 0x00, 0x00, 0x10,
+	0x00, 0x48, 0x48, 0x48, 0x48, 0x48, 0x48, 0x08,
+	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+	0x08, 0x08, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+}
+
+// CRInit initializes a CharRange
+func CRInit(cr *CharRange, memOpaque interface{}, reallocFunc func(opaque interface{}, ptr []uint32, size int) []uint32) {
+	cr.Len = 0
+	cr.Size = 0
+	cr.Points = nil
+	cr.MemOpaque = memOpaque
+	cr.ReallocFunc = reallocFunc
+}
+
+// CRFree frees the CharRange memory
+func CRFree(cr *CharRange) {
+	if cr.ReallocFunc != nil {
+		cr.Points = cr.ReallocFunc(cr.MemOpaque, cr.Points, 0)
+	} else {
+		cr.Points = nil
+	}
+	cr.Len = 0
+	cr.Size = 0
+}
+
+// CRRealloc reallocates the CharRange points buffer to the given size
+func CRRealloc(cr *CharRange, size int) int {
+	var newPoints []uint32
+	if cr.ReallocFunc != nil {
+		newPoints = cr.ReallocFunc(cr.MemOpaque, cr.Points, size)
+	} else {
+		// Default realloc implementation if no custom function provided
+		newPoints = make([]uint32, size)
+		copy(newPoints, cr.Points)
+	}
+	if newPoints == nil && size != 0 {
+		return -1
+	}
+	cr.Points = newPoints
+	cr.Size = size
+	return 0
+}
+
+// CRAddPoint adds a single point to the CharRange
+func CRAddPoint(cr *CharRange, v uint32) int {
+	if cr.Len >= cr.Size {
+		newSize := cr.Size
+		if newSize == 0 {
+			newSize = 8
+		} else {
+			newSize *= 2
+		}
+		if err := CRRealloc(cr, newSize); err != 0 {
+			return -1
+		}
+	}
+	cr.Points[cr.Len] = v
+	cr.Len++
+	return 0
+}
+
+// CRAddInterval adds an interval [c1, c2] (inclusive) to the CharRange
+func CRAddInterval(cr *CharRange, c1, c2 uint32) int {
+	if (cr.Len + 2) > cr.Size {
+		newSize := cr.Size
+		if newSize == 0 {
+			newSize = 8
+		} else {
+			newSize = max(newSize*2, cr.Len+2)
+		}
+		if err := CRRealloc(cr, newSize); err != 0 {
+			return -1
+		}
+	}
+	cr.Points[cr.Len] = c1
+	cr.Points[cr.Len+1] = c2 + 1 // convert to [start, end) as per original
+	cr.Len += 2
+	return 0
+}
+
+// IsSpaceByte checks if an ASCII byte is a space character
+func IsSpaceByte(c uint8) bool {
+	return (lre_ctype_bits[c] & UNICODE_C_SPACE) != 0
+}
+
+// IsIDStartByte checks if an ASCII byte is a valid identifier start character
+func IsIDStartByte(c uint8) bool {
+	return (lre_ctype_bits[c] & (UNICODE_C_UPPER | UNICODE_C_LOWER | UNICODE_C_UNDER | UNICODE_C_DOLLAR)) != 0
+}
+
+// IsIDContinueByte checks if an ASCII byte is a valid identifier continue character
+func IsIDContinueByte(c uint8) bool {
+	return (lre_ctype_bits[c] & (UNICODE_C_UPPER | UNICODE_C_LOWER | UNICODE_C_UNDER | UNICODE_C_DOLLAR | UNICODE_C_DIGIT)) != 0
+}
+
+// IsWordByte checks if an ASCII byte is a word character
+func IsWordByte(c uint8) bool {
+	return (lre_ctype_bits[c] & (UNICODE_C_UPPER | UNICODE_C_LOWER | UNICODE_C_UNDER | UNICODE_C_DIGIT)) != 0
+}
+
+// IsSpace checks if a rune is a space character
+func IsSpace(c uint32) bool {
+	if c == 0x00A0 {
+		return true
+	}
+	if c < 256 {
+		return IsSpaceByte(uint8(c))
+	}
+	return IsSpaceNonASCII(c)
+}
+
+// IsSpaceNonASCII checks if a non-ASCII rune is a space character
+func IsSpaceNonASCII(c uint32) bool {
+	// Match original C implementation including all JS valid whitespace
+	if c == 0x00A0 || c == 0x1680 || c == 0x202F || c == 0x205F || c == 0x3000 {
+		return true
+	}
+	if c >= 0x2000 && c <= 0x200A {
+		return true
+	}
+	return unicode.IsSpace(rune(c))
+}
+
+// IsCased checks if a rune is cased (upper, lower, title)
+func IsCased(c uint32) bool {
+	r := rune(c)
+	return unicode.IsUpper(r) || unicode.IsLower(r) || unicode.IsTitle(r)
+}
+
+// IsCaseIgnorable checks if a rune is case ignorable
+func IsCaseIgnorable(c uint32) bool {
+	r := rune(c)
+	return unicode.IsMark(r) || unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r)
+}
+
+// IsIDStart checks if a rune is a valid identifier start character
+func IsIDStart(c uint32) bool {
+	if !CONFIG_ALL_UNICODE {
+		return !IsSpaceNonASCII(c)
+	}
+	r := rune(c)
+	return unicode.IsLetter(r) || r == '_' || r == '$'
+}
+
+// IsIDContinue checks if a rune is a valid identifier continue character
+func IsIDContinue(c uint32) bool {
+	if c >= 0x200C && c <= 0x200D {
+		return true // ZWNJ and ZWJ are allowed
+	}
+	if !CONFIG_ALL_UNICODE {
+		return !IsSpaceNonASCII(c)
+	}
+	r := rune(c)
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '$' || unicode.IsMark(r) || unicode.IsNumber(r)
+}
+
+// JSIsIdentFirst checks if a rune is a valid JavaScript identifier first character
+func JSIsIdentFirst(c uint32) bool {
+	if c < 128 {
+		return IsIDStartByte(uint8(c))
+	}
+	return IsIDStart(c)
+}
+
+// JSIsIdentNext checks if a rune is a valid JavaScript identifier next character
+func JSIsIdentNext(c uint32) bool {
+	if c < 128 {
+		return IsIDContinueByte(uint8(c))
+	}
+	if c >= 0x200C && c <= 0x200D {
+		return true
+	}
+	return IsIDContinue(c)
+}
