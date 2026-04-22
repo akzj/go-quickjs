@@ -253,6 +253,26 @@ func (vm *VM) executeOp(op opcode.Opcode) bool {
 		}
 		vm.push(arr)
 
+	case opcode.OP_array_push:
+		// Stack: [arr, value] -> [arr, newLength]
+		val := vm.pop()
+		obj := vm.peek()
+		if arr, ok := obj.(*value.ArrayValue); ok {
+			arr.Push(val)
+			vm.replaceTop(value.IntValue(arr.Length()))
+		} else {
+			vm.replaceTop(value.Undefined())
+		}
+
+	case opcode.OP_array_pop:
+		// Stack: [arr] -> [value]
+		obj := vm.pop()
+		if arr, ok := obj.(*value.ArrayValue); ok {
+			vm.push(arr.Pop())
+		} else {
+			vm.push(value.Undefined())
+		}
+
 	default:
 		panic(fmt.Sprintf("unimplemented opcode: %v", op))
 	}

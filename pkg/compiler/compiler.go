@@ -32,9 +32,10 @@ func SimpleCompile(source string) *Bytecode {
 
 // Compiler transforms tokens into bytecode
 type Compiler struct {
-	tokens []lexer.Token
-	pos    int
-	bc     *Bytecode
+	tokens          []lexer.Token
+	pos             int
+	bc              *Bytecode
+	currentMethod   string // tracks special method: "push", "pop", etc.
 }
 
 // NewCompiler creates a new compiler from tokens
@@ -434,7 +435,22 @@ func (c *Compiler) parsePrimary() {
 		name := tok.Str
 		idx := c.registerVar(name)
 		c.emitU16(opcode.OP_get_var_undef, uint16(idx))
-		if c.peek().Type == lexer.TokenLeftParen {
+		// Handle method calls like obj.push() or obj.pop()
+		for c.peek().Type == lexer.TokenDot {
+			c.next() // consume '.'
+			propTok := c.peek()
+			c.expect(lexer.TokenIdent)
+			propName := propTok.Str
+			if propName == "push" || propName == "pop" {
+				c.currentMethod = propName
+			} else {
+				propIdx := c.addStringPool(propName)
+				c.emitU32(opcode.OP_get_prop, uint32(propIdx))
+			}
+		}
+		if c.currentMethod != "" {
+			c.parseCall(-1)
+		} else if c.peek().Type == lexer.TokenLeftParen {
 			c.parseCall(idx)
 		}
 	case lexer.TokenLeftParen:
@@ -444,17 +460,24 @@ func (c *Compiler) parsePrimary() {
 	case lexer.TokenLeftBracket:
 		c.next()
 		c.parseArrayLiteral()
+		// Handle method calls on array literals like [1,2].push(3)
+		for c.peek().Type == lexer.TokenDot {
+			c.next()
+			propTok := c.peek()
+			c.expect(lexer.TokenIdent)
+			propName := propTok.Str
+			if propName == "push" || propName == "pop" {
+				c.currentMethod = propName
+			} else {
+				propIdx := c.addStringPool(propName)
+				c.emitU32(opcode.OP_get_prop, uint32(propIdx))
+			}
+		}
+		if c.currentMethod != "" {
+			c.parseCall(-1)
+		}
 	default:
 		c.bc.Code = append(c.bc.Code, byte(opcode.OP_undefined))
-	}
-
-	// Handle postfix property access: .property
-	for c.peek().Type == lexer.TokenDot {
-		c.next() // consume '.'
-		propTok := c.peek()
-		c.expect(lexer.TokenIdent)
-		propIdx := c.addStringPool(propTok.Str)
-		c.emitU32(opcode.OP_get_prop, uint32(propIdx))
 	}
 }
 
@@ -472,6 +495,22 @@ func (c *Compiler) parseCall(funcVarIdx int) {
 	}
 	c.expect(lexer.TokenRightParen)
 
+	// Handle special array methods (set by parsePropertyAccess)
+	methodName := c.currentMethod
+	c.currentMethod = "" // reset
+
+	if methodName == "push" {
+		// Stack: [arr, value], emit push opcode
+		c.bc.Code = append(c.bc.Code, byte(opcode.OP_array_push))
+		return
+	}
+	if methodName == "pop" {
+		// Stack: [arr], emit pop opcode
+		c.bc.Code = append(c.bc.Code, byte(opcode.OP_array_pop))
+		return
+	}
+
+	// Regular function call
 	if argCount == 0 {
 		c.bc.Code = append(c.bc.Code, byte(opcode.OP_call0))
 	} else if argCount == 1 {

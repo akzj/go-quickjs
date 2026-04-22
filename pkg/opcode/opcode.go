@@ -57,6 +57,8 @@ const (
 	OP_call2
 	OP_push_func
 	OP_array
+	OP_array_push
+	OP_array_pop
 
 	// === Category 9: Jump ===
 	OP_goto
@@ -75,6 +77,10 @@ func OpcodeSize(op Opcode) int {
 		return 3
 	case OP_array:
 		return 3
+	case OP_array_push:
+		return 2 // pop arr, pop value, push new length
+	case OP_array_pop:
+		return 1 // pop arr, push removed value
 	case OP_undefined, OP_null, OP_push_true, OP_push_false,
 		OP_add, OP_sub, OP_mul, OP_div, OP_mod, OP_neg,
 		OP_eq, OP_neq, OP_lt, OP_lte, OP_gt, OP_gte,
@@ -118,6 +124,10 @@ func StackEffect(op Opcode) (pop, push int) {
 		return 2, 1
 	case OP_array:
 		return 2, 1 // pop n + n elements, push array
+	case OP_array_push:
+		return 2, 1 // pop arr, pop value, push new length
+	case OP_array_pop:
+		return 1, 1 // pop arr, push removed value
 	default:
 		return 0, 0
 	}
