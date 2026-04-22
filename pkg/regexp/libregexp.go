@@ -1482,6 +1482,7 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 	// After pc+=4 at split: pc = current + 4
 	// We want splitPc = lastAtomStart (atom start)
 	// offset = lastAtomStart - (current + 4) = -(current + 4 - lastAtomStart) = -(atomLen + 4)
+	fmt.Printf("DEBUG: parseQuantifier: lastAtomStart=%d, atomLen=%d, emitting offset=%d\n", lastAtomStart, atomLen, -(atomLen+4))
 	s.emitOpU32(splitOp, uint32(-(atomLen+4)))
 
 	// Emit goto to skip past quantifier (to save_end)

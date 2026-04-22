@@ -1,0 +1,1 @@
+package main; import "fmt"; import "github.com/akzj/go-quickjs/pkg/regexp"; func main() { bc, _ := regexp.Compile("abc", 0, nil); fmt.Printf("Bytecode length: %d bytes\n", len(bc)); fmt.Printf("Header len: %d\n", regexp.HeaderLen); fmt.Printf("Bytecode after header: %x\n", bc[regexp.HeaderLen:]); for i, b := range bc[regexp.HeaderLen:] { fmt.Printf("%d: 0x%02x\n", i, b); } }
