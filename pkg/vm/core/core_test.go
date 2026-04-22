@@ -281,6 +281,9 @@ func TestWhileLoop(t *testing.T) {
 		t.Errorf("while (i < 0): expected 0, got %v", result2)
 	}
 
-	// NOTE: while loop with body that modifies variables is not yet working
-	// The bytecode generation for loops with body statements has offset calculation issues
+	// Test: while (i < 3) i = i + 1; i - was broken, now fixed
+	result3 := ctx.CompileAndRun("var i = 0; while (i < 3) i = i + 1; i")
+	if n, ok := result3.(value.IntValue); !ok || int64(n) != 3 {
+		t.Errorf("while (i < 3) i = i + 1: expected 3, got %v", result3)
+	}
 }

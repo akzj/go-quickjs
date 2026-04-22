@@ -265,12 +265,13 @@ func (p *parser) parseWhile() {
 	p.parseStatement()
 
 	// Emit goto back to condition
-	// After emitLabel: len = gotoPos + 5
+	// Fix: capture gotoPos BEFORE emitLabel, then patch
+	gotoPos := len(p.bc.Code)         // position BEFORE emit (after body)
+	p.emitLabel(opcode.OP_goto, 0)    // emit placeholder
+	// After emit: len = gotoPos + 5
 	// We want: gotoPos + 5 + offset = loopStart
-	// So: offset = loopStart - (gotoPos + 5) = loopStart - len
-	// But len already INCLUDES the goto's 5 bytes, so:
-	// offset = loopStart - len  (this is correct!)
-	p.emitLabel(opcode.OP_goto, int32(loopStart-len(p.bc.Code)))
+	// So: offset = loopStart - (gotoPos + 5)
+	p.patchLabel(gotoPos, loopStart-gotoPos-5)
 
 	// After goto is emitted, current position is AFTER the goto (gotoPos + 5)
 	// This is also where if_false should jump to (exit the loop)
