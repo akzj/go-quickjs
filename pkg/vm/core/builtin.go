@@ -1,9 +1,16 @@
 package core
 
 import (
+	"github.com/akzj/go-quickjs/pkg/lexer"
 	"github.com/akzj/go-quickjs/pkg/opcode"
 	"github.com/akzj/go-quickjs/pkg/value"
 )
+
+// tokenType is an alias for lexer.TokenType for backward compatibility
+type tokenType = lexer.TokenType
+
+// token is an alias for lexer.Token for backward compatibility
+type token = lexer.Token
 
 // CompileAndRun compiles JavaScript source and executes it
 func (ctx *JSContext) CompileAndRun(source string) value.JSValue {
@@ -57,7 +64,7 @@ func (p *parser) peek() token {
 	if p.pos < len(p.tokens) {
 		return p.tokens[p.pos]
 	}
-	return token{typ: tokenEOF}
+	return token{Type: lexer.TokenEof}
 }
 
 // next consumes and returns the next token
@@ -69,7 +76,7 @@ func (p *parser) next() token {
 
 // expect consumes a token of expected type, returns true if matched
 func (p *parser) expect(typ tokenType) bool {
-	if p.peek().typ == typ {
+	if p.peek().Type == typ {
 		p.pos++
 		return true
 	}
@@ -78,7 +85,7 @@ func (p *parser) expect(typ tokenType) bool {
 
 // parse parses the entire program
 func (p *parser) parse() {
-	for p.peek().typ != tokenEOF {
+	for p.peek().Type != lexer.TokenEof {
 		p.parseStatement()
 	}
 }
@@ -86,21 +93,21 @@ func (p *parser) parse() {
 // parseStatement parses a statement
 func (p *parser) parseStatement() {
 	tok := p.peek()
-	switch tok.typ {
-	case tokenVar, tokenLet:
-		p.parseVarDecl(tok.typ == tokenLet, true) // as statement, drop result
-	case tokenIf:
+	switch tok.Type {
+	case lexer.TokenVar, lexer.TokenLet:
+		p.parseVarDecl(tok.Type == lexer.TokenLet, true) // as statement, drop result
+	case lexer.TokenIf:
 		p.parseIf()
-	case tokenWhile:
+	case lexer.TokenWhile:
 		p.parseWhile()
-	case tokenLeftBrace:
+	case lexer.TokenLeftBrace:
 		p.parseBlock()
-	case tokenSemicolon:
+	case lexer.TokenSemicolon:
 		p.next() // consume empty statement
 	default:
 		p.parseExpression()
 		// Optional semicolon
-		if p.peek().typ == tokenSemicolon {
+		if p.peek().Type == lexer.TokenSemicolon {
 			p.next()
 		}
 	}
@@ -108,16 +115,16 @@ func (p *parser) parseStatement() {
 
 // parseBlock parses a block: { statement* }
 func (p *parser) parseBlock() {
-	if !p.expect(tokenLeftBrace) {
+	if !p.expect(lexer.TokenLeftBrace) {
 		return
 	}
 	for {
-		if p.peek().typ == tokenRightBrace || p.peek().typ == tokenEOF {
+		if p.peek().Type == lexer.TokenRightBrace || p.peek().Type == lexer.TokenEof {
 			break
 		}
 		p.parseStatement()
 	}
-	if !p.expect(tokenRightBrace) {
+	if !p.expect(lexer.TokenRightBrace) {
 		// Error - missing closing brace
 	}
 }
@@ -147,17 +154,17 @@ func (p *parser) parseVarDecl(isLet bool, dropResult bool) {
 
 	for {
 		nameTok := p.next()
-		if nameTok.typ != tokenIdent {
+		if nameTok.Type != lexer.TokenIdent {
 			// Error: expected identifier
 			return
 		}
-		name := nameTok.name
+		name := nameTok.Str
 
 		// Register variable
 		idx := p.registerVar(name)
 
 		// Check for initializer: "= expr"
-		if p.peek().typ == tokenAssign {
+		if p.peek().Type == lexer.TokenAssign {
 			p.next() // consume '='
 			p.parseExpression()
 		} else {
@@ -174,7 +181,7 @@ func (p *parser) parseVarDecl(isLet bool, dropResult bool) {
 		}
 
 		// Check for comma (multiple declarations)
-		if p.peek().typ == tokenComma {
+		if p.peek().Type == lexer.TokenComma {
 			p.next()
 			continue
 		}
@@ -182,7 +189,7 @@ func (p *parser) parseVarDecl(isLet bool, dropResult bool) {
 	}
 
 	// Consume semicolon
-	if p.peek().typ == tokenSemicolon {
+	if p.peek().Type == lexer.TokenSemicolon {
 		p.next()
 	}
 }
@@ -192,7 +199,7 @@ func (p *parser) parseIf() {
 	p.next() // consume 'if'
 
 	// Expect '('
-	if !p.expect(tokenLeftParen) {
+	if !p.expect(lexer.TokenLeftParen) {
 		return
 	}
 
@@ -200,7 +207,7 @@ func (p *parser) parseIf() {
 	p.parseExpression()
 
 	// Expect ')'
-	if !p.expect(tokenRightParen) {
+	if !p.expect(lexer.TokenRightParen) {
 		return
 	}
 
@@ -219,7 +226,7 @@ func (p *parser) parseIf() {
 	p.patchLabel(ifFalsePos, thenBranchEnd-(ifFalsePos+5))
 
 	// Check for else
-	if p.peek().typ == tokenElse {
+	if p.peek().Type == lexer.TokenElse {
 		p.next() // consume 'else'
 
 		// Emit goto to skip else when then is done (this goes BEFORE else branch)
@@ -245,7 +252,7 @@ func (p *parser) parseWhile() {
 	loopStart := len(p.bc.Code)
 
 	// Expect '('
-	if !p.expect(tokenLeftParen) {
+	if !p.expect(lexer.TokenLeftParen) {
 		return
 	}
 
@@ -253,7 +260,7 @@ func (p *parser) parseWhile() {
 	p.parseExpression()
 
 	// Expect ')'
-	if !p.expect(tokenRightParen) {
+	if !p.expect(lexer.TokenRightParen) {
 		return
 	}
 
@@ -293,14 +300,14 @@ func (p *parser) parseExpression() {
 func (p *parser) parseAssignment() {
 	// Check if this is an assignment: ident = expr
 	tok := p.peek()
-	if tok.typ == tokenIdent {
+	if tok.Type == lexer.TokenIdent {
 		// Look ahead to check if next is =
 		savedPos := p.pos
 		p.next() // consume identifier
-		if p.peek().typ == tokenAssign {
+		if p.peek().Type == lexer.TokenAssign {
 			p.next() // consume =
 			// It's an assignment: ident = expr
-			name := tok.name
+			name := tok.Str
 			idx := p.registerVar(name)
 			p.parseAssignment() // parse right-hand side
 			// Value is on stack, now store it
@@ -319,12 +326,12 @@ func (p *parser) parseAdditive() {
 	p.parseMultiplicative()
 
 	for {
-		switch p.peek().typ {
-		case tokenPlus:
+		switch p.peek().Type {
+		case lexer.TokenPlus:
 			p.next()
 			p.parseMultiplicative()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_add))
-		case tokenMinus:
+		case lexer.TokenMinus:
 			p.next()
 			p.parseMultiplicative()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_sub))
@@ -339,28 +346,28 @@ func (p *parser) parseComparison() {
 	p.parseAdditive()
 
 	for {
-		switch p.peek().typ {
-		case tokenLt:
+		switch p.peek().Type {
+		case lexer.TokenLt:
 			p.next()
 			p.parseAdditive()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_lt))
-		case tokenLte:
+		case lexer.TokenLte:
 			p.next()
 			p.parseAdditive()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_lte))
-		case tokenGt:
+		case lexer.TokenGt:
 			p.next()
 			p.parseAdditive()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_gt))
-		case tokenGte:
+		case lexer.TokenGte:
 			p.next()
 			p.parseAdditive()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_gte))
-		case tokenEq:
+		case lexer.TokenEq:
 			p.next()
 			p.parseAdditive()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_eq))
-		case tokenNeq:
+		case lexer.TokenNeq:
 			p.next()
 			p.parseAdditive()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_neq))
@@ -375,16 +382,16 @@ func (p *parser) parseMultiplicative() {
 	p.parseUnary()
 
 	for {
-		switch p.peek().typ {
-		case tokenMul:
+		switch p.peek().Type {
+		case lexer.TokenMul:
 			p.next()
 			p.parseUnary()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_mul))
-		case tokenDiv:
+		case lexer.TokenDiv:
 			p.next()
 			p.parseUnary()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_div))
-		case tokenMod:
+		case lexer.TokenMod:
 			p.next()
 			p.parseUnary()
 			p.bc.Code = append(p.bc.Code, byte(opcode.OP_mod))
@@ -403,37 +410,37 @@ func (p *parser) parseUnary() {
 func (p *parser) parsePrimary() {
 	tok := p.peek()
 
-	switch tok.typ {
-	case tokenNum:
+	switch tok.Type {
+	case lexer.TokenNum:
 		p.next()
-		p.emitPushI32(tok.value)
+		p.emitPushI32(tok.Value)
 
-	case tokenTrue:
+	case lexer.TokenTrue:
 		p.next()
 		p.bc.Code = append(p.bc.Code, byte(opcode.OP_push_true))
 
-	case tokenFalse:
+	case lexer.TokenFalse:
 		p.next()
 		p.bc.Code = append(p.bc.Code, byte(opcode.OP_push_false))
 
-	case tokenUndefined:
+	case lexer.TokenUndefined:
 		p.next()
 		p.bc.Code = append(p.bc.Code, byte(opcode.OP_undefined))
 
-	case tokenNull:
+	case lexer.TokenNull:
 		p.next()
 		p.bc.Code = append(p.bc.Code, byte(opcode.OP_null))
 
-	case tokenIdent:
+	case lexer.TokenIdent:
 		p.next()
-		name := tok.name
+		name := tok.Str
 		idx := p.registerVar(name)
 		p.emitU16(opcode.OP_get_var_undef, uint16(idx))
 
-	case tokenLeftParen:
+	case lexer.TokenLeftParen:
 		p.next()
 		p.parseExpression()
-		if !p.expect(tokenRightParen) {
+		if !p.expect(lexer.TokenRightParen) {
 			// Error - missing closing paren
 		}
 
@@ -488,198 +495,8 @@ func emitPushI32(bc *Bytecode, v int32) {
 	)
 }
 
-// tokenTypeToOpcode converts token type to opcode
-func (t tokenType) toOpcode() opcode.Opcode {
-	switch t {
-	case tokenPlus:
-		return opcode.OP_add
-	case tokenMinus:
-		return opcode.OP_sub
-	case tokenMul:
-		return opcode.OP_mul
-	case tokenDiv:
-		return opcode.OP_div
-	case tokenMod:
-		return opcode.OP_mod
-	case tokenTrue:
-		return opcode.OP_push_true
-	case tokenFalse:
-		return opcode.OP_push_false
-	case tokenUndefined:
-		return opcode.OP_undefined
-	case tokenNull:
-		return opcode.OP_null
-	default:
-		return opcode.OP_invalid
-	}
-}
-
-// Token types
-type tokenType int
-
-const (
-	tokenNum tokenType = iota
-	tokenPlus
-	tokenMinus
-	tokenMul
-	tokenDiv
-	tokenMod
-	tokenTrue
-	tokenFalse
-	tokenUndefined
-	tokenNull
-	tokenLeftParen
-	tokenRightParen
-	tokenLeftBrace
-	tokenRightBrace
-	tokenSemicolon
-	tokenEOF
-	// New tokens for Stage 2
-	tokenVar
-	tokenLet
-	tokenConst
-	tokenIf
-	tokenElse
-	tokenWhile
-	tokenIdent
-	tokenAssign
-	tokenEq
-	tokenNeq
-	tokenLt
-	tokenLte
-	tokenGt
-	tokenGte
-	tokenBang
-	tokenComma
-)
-
-type token struct {
-	typ   tokenType
-	value int32
-	name  string // for identifiers
-}
-
-// tokenize parses source into tokens
+// Tokenize is now an alias to the lexer package
+// This maintains backward compatibility with the old tokenize() signature
 func tokenize(source string) []token {
-	tokens := make([]token, 0, len(source))
-
-	i := 0
-	for i < len(source) {
-		c := source[i]
-
-		// Skip whitespace
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			i++
-			continue
-		}
-
-		// Numbers
-		if c >= '0' && c <= '9' {
-			start := i
-			for i < len(source) && source[i] >= '0' && source[i] <= '9' {
-				i++
-			}
-			numStr := source[start:i]
-			var n int32
-			for _, d := range numStr {
-				n = n*10 + int32(d-'0')
-			}
-			tokens = append(tokens, token{typ: tokenNum, value: n})
-			continue
-		}
-
-		// Identifiers and keywords
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' {
-			start := i
-			for i < len(source) && ((source[i] >= 'a' && source[i] <= 'z') ||
-				(source[i] >= 'A' && source[i] <= 'Z') ||
-				(source[i] >= '0' && source[i] <= '9') ||
-				source[i] == '_' || source[i] == '$') {
-				i++
-			}
-			ident := source[start:i]
-			// Check for keywords
-			switch ident {
-			case "true":
-				tokens = append(tokens, token{typ: tokenTrue})
-			case "false":
-				tokens = append(tokens, token{typ: tokenFalse})
-			case "undefined":
-				tokens = append(tokens, token{typ: tokenUndefined})
-			case "null":
-				tokens = append(tokens, token{typ: tokenNull})
-			case "var":
-				tokens = append(tokens, token{typ: tokenVar})
-			case "let":
-				tokens = append(tokens, token{typ: tokenLet})
-			case "const":
-				tokens = append(tokens, token{typ: tokenConst})
-			case "if":
-				tokens = append(tokens, token{typ: tokenIf})
-			case "else":
-				tokens = append(tokens, token{typ: tokenElse})
-			case "while":
-				tokens = append(tokens, token{typ: tokenWhile})
-			default:
-				tokens = append(tokens, token{typ: tokenIdent, name: ident})
-			}
-			continue
-		}
-
-		// Single char operators
-		switch c {
-		case '+':
-			tokens = append(tokens, token{typ: tokenPlus})
-		case '-':
-			tokens = append(tokens, token{typ: tokenMinus})
-		case '*':
-			tokens = append(tokens, token{typ: tokenMul})
-		case '/':
-			tokens = append(tokens, token{typ: tokenDiv})
-		case '%':
-			tokens = append(tokens, token{typ: tokenMod})
-		case '(':
-			tokens = append(tokens, token{typ: tokenLeftParen})
-		case ')':
-			tokens = append(tokens, token{typ: tokenRightParen})
-		case '{':
-			tokens = append(tokens, token{typ: tokenLeftBrace})
-		case '}':
-			tokens = append(tokens, token{typ: tokenRightBrace})
-		case ';':
-			tokens = append(tokens, token{typ: tokenSemicolon})
-		case '=':
-			if i+1 < len(source) && source[i+1] == '=' {
-				tokens = append(tokens, token{typ: tokenEq})
-				i++ // skip the second =
-			} else {
-				tokens = append(tokens, token{typ: tokenAssign})
-			}
-		case '!':
-			if i+1 < len(source) && source[i+1] == '=' {
-				tokens = append(tokens, token{typ: tokenNeq})
-				i++ // skip =
-			} else {
-				tokens = append(tokens, token{typ: tokenBang})
-			}
-		case '<':
-			if i+1 < len(source) && source[i+1] == '=' {
-				tokens = append(tokens, token{typ: tokenLte})
-				i++
-			} else {
-				tokens = append(tokens, token{typ: tokenLt})
-			}
-		case '>':
-			if i+1 < len(source) && source[i+1] == '=' {
-				tokens = append(tokens, token{typ: tokenGte})
-				i++
-			} else {
-				tokens = append(tokens, token{typ: tokenGt})
-			}
-		}
-		i++
-	}
-
-	tokens = append(tokens, token{typ: tokenEOF})
-	return tokens
+	return lexer.TokenizeSimple(source)
 }
