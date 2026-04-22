@@ -186,6 +186,20 @@ func (vm *VM) executeOp(op opcode.Opcode) bool {
 			vm.push(value.Undefined())
 		}
 
+	case opcode.OP_get_prop:
+		idx := opcode.ReadU32(vm.frame.Bytecode(), &vm.frame.PC)
+		propVal := vm.frame.PoolVal(int(idx))
+		propName := ""
+		if sv, ok := propVal.(value.StringValue); ok {
+			propName = sv.String()
+		}
+		obj := vm.peek()
+		if arr, ok := obj.(*value.ArrayValue); ok && propName == "length" {
+			vm.replaceTop(value.IntValue(arr.Length()))
+		} else {
+			vm.replaceTop(value.Undefined())
+		}
+
 	case opcode.OP_put_var, opcode.OP_put_var_init:
 		idx := opcode.ReadU16(vm.frame.Bytecode(), &vm.frame.PC)
 		v := vm.pop()
@@ -230,6 +244,14 @@ func (vm *VM) executeOp(op opcode.Opcode) bool {
 	case opcode.OP_call:
 		nArgs := int(opcode.ReadU16(vm.frame.Bytecode(), &vm.frame.PC))
 		vm.callFunction(nArgs)
+
+	case opcode.OP_array:
+		n := int(opcode.ReadU16(vm.frame.Bytecode(), &vm.frame.PC))
+		arr := value.NewArray(n)
+		for i := n - 1; i >= 0; i-- {
+			arr.Set(uint32(i), vm.pop())
+		}
+		vm.push(arr)
 
 	default:
 		panic(fmt.Sprintf("unimplemented opcode: %v", op))
@@ -301,4 +323,13 @@ func (vm *VM) peek() value.JSValue {
 		return value.Undefined()
 	}
 	return vm.stack[n-1]
+}
+
+func (vm *VM) replaceTop(v value.JSValue) {
+	n := len(vm.stack)
+	if n > 0 {
+		vm.stack[n-1] = v
+	} else {
+		vm.stack = append(vm.stack, v)
+	}
 }

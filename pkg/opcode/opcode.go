@@ -46,6 +46,7 @@ const (
 
 	// === Category 7: Variables ===
 	OP_get_var_undef
+	OP_get_prop
 	OP_put_var
 	OP_put_var_init
 
@@ -55,6 +56,7 @@ const (
 	OP_call1
 	OP_call2
 	OP_push_func
+	OP_array
 
 	// === Category 9: Jump ===
 	OP_goto
@@ -71,12 +73,14 @@ func OpcodeSize(op Opcode) int {
 		return 5
 	case OP_call:
 		return 3
+	case OP_array:
+		return 3
 	case OP_undefined, OP_null, OP_push_true, OP_push_false,
 		OP_add, OP_sub, OP_mul, OP_div, OP_mod, OP_neg,
 		OP_eq, OP_neq, OP_lt, OP_lte, OP_gt, OP_gte,
 		OP_strict_eq, OP_strict_neq, OP_drop, OP_dup,
 		OP_return, OP_ret,
-		OP_get_var_undef, OP_put_var, OP_put_var_init,
+		OP_get_var_undef, OP_get_prop, OP_put_var, OP_put_var_init,
 		OP_call0, OP_call1, OP_call2:
 		return 1
 	case OP_goto, OP_if_false, OP_if_true:
@@ -112,6 +116,8 @@ func StackEffect(op Opcode) (pop, push int) {
 		return 1, 0
 	case OP_call, OP_call0, OP_call1, OP_call2:
 		return 2, 1
+	case OP_array:
+		return 2, 1 // pop n + n elements, push array
 	default:
 		return 0, 0
 	}

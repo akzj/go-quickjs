@@ -199,6 +199,17 @@ func (c *Compiler) registerVar(name string) int {
 	return idx
 }
 
+func (c *Compiler) addStringPool(s string) int {
+	for i, v := range c.bc.Pool {
+		if sv, ok := v.(value.StringValue); ok && sv.String() == s {
+			return i
+		}
+	}
+	idx := len(c.bc.Pool)
+	c.bc.Pool = append(c.bc.Pool, value.NewString(s))
+	return idx
+}
+
 func (c *Compiler) parseVarDecl(isLet bool, dropResult bool) {
 	if isLet {
 		c.next()
@@ -383,6 +394,23 @@ func (c *Compiler) parseUnary() {
 	c.parsePrimary()
 }
 
+func (c *Compiler) parseArrayLiteral() {
+	// Parse array literal: [elem1, elem2, ...]
+	elements := 0
+	for c.peek().Type != lexer.TokenRightBracket && c.peek().Type != lexer.TokenEof {
+		c.parseExpression()
+		elements++
+		if c.peek().Type == lexer.TokenComma {
+			c.next()
+		} else {
+			break
+		}
+	}
+	c.expect(lexer.TokenRightBracket)
+	// Emit: OP_array n (pops n elements, pushes array)
+	c.emitU16(opcode.OP_array, uint16(elements))
+}
+
 func (c *Compiler) parsePrimary() {
 	tok := c.peek()
 	switch tok.Type {
@@ -413,8 +441,20 @@ func (c *Compiler) parsePrimary() {
 		c.next()
 		c.parseExpression()
 		c.expect(lexer.TokenRightParen)
+	case lexer.TokenLeftBracket:
+		c.next()
+		c.parseArrayLiteral()
 	default:
 		c.bc.Code = append(c.bc.Code, byte(opcode.OP_undefined))
+	}
+
+	// Handle postfix property access: .property
+	for c.peek().Type == lexer.TokenDot {
+		c.next() // consume '.'
+		propTok := c.peek()
+		c.expect(lexer.TokenIdent)
+		propIdx := c.addStringPool(propTok.Str)
+		c.emitU32(opcode.OP_get_prop, uint32(propIdx))
 	}
 }
 
