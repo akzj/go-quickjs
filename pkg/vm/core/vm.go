@@ -223,6 +223,27 @@ func (vm *VM) executeOp(op opcode.Opcode) bool {
 			vm.frame.PC += int(offset)
 		}
 
+	case opcode.OP_post_inc:
+		// Stack: [value, value] (dup) -> [new_value, old_value]
+		// First pop is the duplicate (to be discarded)
+		vm.pop() // discard duplicate
+		// Second pop is the original, compute new value
+		v := vm.pop()
+		oldVal := value.NewInt(int64(value.ToFloat64(v)))
+		newVal := value.Add(v, value.NewInt(1))
+		// Push new value (for put_var), then old value (for return)
+		vm.push(newVal)
+		vm.push(oldVal)
+
+	case opcode.OP_post_dec:
+		// Stack: [value, value] (dup) -> [new_value, old_value]
+		vm.pop() // discard duplicate
+		v := vm.pop()
+		oldVal := value.NewInt(int64(value.ToFloat64(v)))
+		newVal := value.Sub(v, value.NewInt(1))
+		vm.push(newVal)
+		vm.push(oldVal)
+
 	case opcode.OP_return:
 		return false
 
@@ -256,12 +277,12 @@ func (vm *VM) executeOp(op opcode.Opcode) bool {
 	case opcode.OP_array_push:
 		// Stack: [arr, value] -> [arr, newLength]
 		val := vm.pop()
-		obj := vm.peek()
-		if arr, ok := obj.(*value.ArrayValue); ok {
-			arr.Push(val)
-			vm.replaceTop(value.IntValue(arr.Length()))
+		arr := vm.pop()
+		if a, ok := arr.(*value.ArrayValue); ok {
+			a.Push(val)
+			vm.push(value.IntValue(a.Length()))
 		} else {
-			vm.replaceTop(value.Undefined())
+			vm.push(value.Undefined())
 		}
 
 	case opcode.OP_array_pop:

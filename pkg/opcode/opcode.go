@@ -64,6 +64,10 @@ const (
 	OP_goto
 	OP_if_false
 	OP_if_true
+
+	// === Category 10: Increment/Decrement ===
+	OP_post_inc
+	OP_post_dec
 )
 
 // OpcodeSize returns the total size in bytes for an opcode with its operands
@@ -75,12 +79,8 @@ func OpcodeSize(op Opcode) int {
 		return 5
 	case OP_call:
 		return 3
-	case OP_array:
-		return 3
-	case OP_array_push:
-		return 2 // pop arr, pop value, push new length
-	case OP_array_pop:
-		return 1 // pop arr, push removed value
+	case OP_array, OP_array_push, OP_array_pop:
+		return 1
 	case OP_undefined, OP_null, OP_push_true, OP_push_false,
 		OP_add, OP_sub, OP_mul, OP_div, OP_mod, OP_neg,
 		OP_eq, OP_neq, OP_lt, OP_lte, OP_gt, OP_gte,
@@ -91,6 +91,8 @@ func OpcodeSize(op Opcode) int {
 		return 1
 	case OP_goto, OP_if_false, OP_if_true:
 		return 5
+	case OP_post_inc, OP_post_dec:
+		return 1
 	default:
 		return 1
 	}
@@ -120,6 +122,8 @@ func StackEffect(op Opcode) (pop, push int) {
 		return 0, 0
 	case OP_if_false, OP_if_true:
 		return 1, 0
+	case OP_post_inc, OP_post_dec:
+		return 1, 1 // pop value, push old value (for i++)
 	case OP_call, OP_call0, OP_call1, OP_call2:
 		return 2, 1
 	case OP_array:

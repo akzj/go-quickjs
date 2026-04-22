@@ -36,6 +36,7 @@ type Compiler struct {
 	pos             int
 	bc              *Bytecode
 	currentMethod   string // tracks special method: "push", "pop", etc.
+	isIncrementPos  bool   // true when parsing increment part of for loop
 }
 
 // NewCompiler creates a new compiler from tokens
@@ -101,6 +102,8 @@ func (c *Compiler) parseStatement() {
 		c.parseIf()
 	case lexer.TokenWhile:
 		c.parseWhile()
+	case lexer.TokenFor:
+		c.parseFor()
 	case lexer.TokenLeftBrace:
 		c.parseBlock()
 	case lexer.TokenSemicolon:
@@ -293,6 +296,52 @@ func (c *Compiler) parseWhile() {
 	c.patchLabel(exitPos, gotoTarget-(exitPos+5))
 }
 
+func (c *Compiler) parseFor() {
+	c.next() // consume 'for'
+	if !c.expect(lexer.TokenLeftParen) {
+		return
+	}
+
+	// Parse init (var i = 0)
+	if c.peek().Type == lexer.TokenVar || c.peek().Type == lexer.TokenLet {
+		c.parseVarDecl(c.peek().Type == lexer.TokenLet, true)
+	}
+	c.expect(lexer.TokenSemicolon)
+
+	// Save position for condition start (for goto back)
+	conditionStart := len(c.bc.Code)
+
+	// Parse condition (i < n)
+	c.parseExpression()
+	c.expect(lexer.TokenSemicolon)
+
+	// Emit jump to skip body when condition is false
+	condJumpPos := len(c.bc.Code)
+	c.emitLabel(opcode.OP_if_false, 0)
+
+	// Parse body
+	c.parseStatement()
+
+	// Parse increment expression (simple assignment like i = i + 1)
+	c.parseExpression()
+	c.expect(lexer.TokenRightParen)
+
+	// Discard increment result
+	c.bc.Code = append(c.bc.Code, byte(opcode.OP_drop))
+
+	// Emit jump back to condition (re-evaluate)
+	gotoConditionPos := len(c.bc.Code)
+	c.emitLabel(opcode.OP_goto, 0)
+
+	// Patch: jump back from increment to condition
+	// offset = conditionStart - (gotoPos + 5)
+	c.patchLabel(gotoConditionPos, conditionStart-gotoConditionPos-5)
+
+	// Patch: skip body+increment when condition is false
+	exitTarget := len(c.bc.Code)
+	c.patchLabel(condJumpPos, exitTarget-(condJumpPos+5))
+}
+
 func (c *Compiler) parseExpression() {
 	c.parseAssignment()
 }
@@ -392,6 +441,39 @@ func (c *Compiler) parseMultiplicative() {
 }
 
 func (c *Compiler) parseUnary() {
+	// Handle post-increment and post-decrement: a++ and a--
+	// We need to peek ahead without consuming
+	if c.peek().Type == lexer.TokenIdent {
+		// Look at next two tokens
+		savedPos := c.pos
+		c.next() // consume ident
+		nextType := c.peek().Type
+		c.pos = savedPos // restore
+		
+		if nextType == lexer.TokenPlusPlus || nextType == lexer.TokenMinusMinus {
+			// This is an increment/decrement
+			c.next() // consume ident
+			c.next() // consume ++ or --
+			name := c.tokens[savedPos].Str
+			idx := c.registerVar(name)
+			c.emitU16(opcode.OP_get_var_undef, uint16(idx))
+			// Duplicate value for both return and increment
+			c.bc.Code = append(c.bc.Code, byte(opcode.OP_dup))
+			if nextType == lexer.TokenPlusPlus {
+				c.bc.Code = append(c.bc.Code, byte(opcode.OP_post_inc))
+			} else {
+				c.bc.Code = append(c.bc.Code, byte(opcode.OP_post_dec))
+			}
+			// Write back the incremented value
+			c.emitU16(opcode.OP_put_var, uint16(idx))
+			// If not in increment position, push old value for return
+			if !c.isIncrementPos {
+				c.emitU16(opcode.OP_get_var_undef, uint16(idx))
+				c.bc.Code = append(c.bc.Code, byte(opcode.OP_dup))
+			}
+			return
+		}
+	}
 	c.parsePrimary()
 }
 
