@@ -534,16 +534,16 @@ func lreCompile(buf string, reFlags int, opaque interface{}) ([]byte, string) {
 	s.byteCode.putU32(0) // bytecode length
 
 	// If not sticky, add .* at the beginning (non-greedy)
-	// Structure: split_goto_first -> any -> goto (loop back)
-	// split_goto_first: execute pattern path first, push any path to stack
+	// Structure: split_next_first -> goto -> any -> goto (loop back)
+	// split_next_first: try main pattern first (pc), then push 'any' path to stack
 	// The goto jumps back to the split instruction (not save_start)
 	if !isSticky {
-		s.emitOpU32(OpSplitGotoFirst, 1+5)  // split to skip 'any', push 'any' path
+		s.emitOpU32(OpSplitNextFirst, 1+5)  // try main pattern first, push 'any' path
 		s.emitOp(OpAny)                       // consume one character
-		// goto: jump back to the split_goto_first instruction
+		// goto: jump back to the split_next_first instruction
 		// split=5 bytes, any=1 byte, goto=5 bytes
 		// offset = -(5 + 1 + 5) = -11 (C QuickJS behavior)
-		s.emitGotoRel(OpGoto, -int32(5+1+5)) // jump back to split_goto_first
+		s.emitGotoRel(OpGoto, -int32(5+1+5)) // jump back to split_next_first
 	}
 	// save_start is AFTER the non-sticky loop to capture correct position
 	s.emitOpU8(OpSaveStart, 0)
@@ -1473,14 +1473,20 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 	// has_goto: * and + need a goto after atom to loop back
 	// no goto: ? doesn't need goto - next instruction follows atom
 	hasGoto := (quantMax == 0x7FFFFFFF) // * and +
+	needsSplit := (quantMin == 0)       // only * and ? need split to skip atom
 
-	splitOp := OpSplitGotoFirst
+	// For greedy quantifiers (* and +), use OpSplitNextFirst
+	// This executes atom first (ensuring min match for +), then tries to skip
+	// For non-greedy (*? and +?), use OpSplitGotoFirst
+	// This tries to skip first, then executes atom (min match last)
+	splitOp := OpSplitNextFirst
 	if !isGreedy {
-		splitOp = OpSplitNextFirst
+		splitOp = OpSplitGotoFirst
 	}
 
-	// Insert split at lastAtomStart
-	// Split offset = atomLen [+ 5 if hasGoto] to jump past atom (+ goto if present)
+
+
+	// For quantMin == 0 (* and ?), emit split + goto
 	insertLen := 5 // split opcode + offset
 	if hasGoto {
 		insertLen += 5 // add goto opcode + offset
