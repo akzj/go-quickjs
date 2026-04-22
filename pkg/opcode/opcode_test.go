@@ -23,9 +23,9 @@ func TestOpcodeSize(t *testing.T) {
 
 func TestStackEffect(t *testing.T) {
 	tests := []struct {
-		op        Opcode
-		wantPop   int
-		wantPush  int
+		op       Opcode
+		wantPop  int
+		wantPush int
 	}{
 		{OP_push_i32, 0, 1},
 		{OP_undefined, 0, 1},

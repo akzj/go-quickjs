@@ -22,6 +22,11 @@ type FunctionDef struct {
 	VarCount int
 }
 
+// FunctionInfo stores information about a compiled function (used by VM)
+type FunctionInfo struct {
+	Bytecode *Bytecode
+}
+
 // Opcode constants for this package (references opcode package)
 const (
 	OpPushI32       = opcode.OP_push_i32

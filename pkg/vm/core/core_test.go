@@ -287,3 +287,27 @@ func TestWhileLoop(t *testing.T) {
 		t.Errorf("while (i < 3) i = i + 1: expected 3, got %v", result3)
 	}
 }
+
+
+func TestFunctionDeclaration(t *testing.T) {
+	ctx := NewContext(nil)
+
+	// Test: function f() { return 42; } f()
+	result := ctx.CompileAndRun("function f() { return 42; } f()")
+	if n, ok := result.(value.IntValue); !ok || int64(n) != 42 {
+		t.Errorf("function f() { return 42; } f(): expected 42, got %v", result)
+	}
+
+	// Test: function add() { return 5 + 3; } add()
+	result2 := ctx.CompileAndRun("function add() { return 5 + 3; } add()")
+	if n, ok := result2.(value.IntValue); !ok || int64(n) != 8 {
+		t.Errorf("function add() { return 5 + 3; } add(): expected 8, got %v", result2)
+	}
+
+	// Test: function id(x) { return x; } id(99)
+	result3 := ctx.CompileAndRun("function id(x) { return x; } id(99)")
+	if n, ok := result3.(value.IntValue); !ok || int64(n) != 99 {
+		t.Errorf("function id(x) { return x; } id(99): expected 99, got %v", result3)
+	}
+}
+}

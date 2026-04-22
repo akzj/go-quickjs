@@ -3,13 +3,10 @@ package value
 import "fmt"
 
 // JSValue is the interface for all JavaScript values
-// This is a tagged interface pattern - each concrete type represents a JS value
 type JSValue interface {
 	Tag() Tag
 	String() string
 }
-
-// --- Inline Value Types ---
 
 // IntValue represents a JavaScript integer (JS_TAG_INT)
 type IntValue int64
@@ -46,20 +43,6 @@ func Null() JSValue { return nullInstance }
 func (v NullValue) Tag() Tag { return JS_TAG_NULL }
 func (v NullValue) String() string { return "null" }
 
-// --- Constructor Functions ---
-
-func NewInt(v int64) JSValue { return IntValue(v) }
-
-// NewFloat converts a float64 to an appropriate JSValue
-// Integers in safe range are represented as IntValue
-func NewFloat(v float64) JSValue {
-	// Check if it's a safe integer
-	if v == float64(int64(v)) && v >= -9007199254740992 && v <= 9007199254740992 {
-		return IntValue(int64(v))
-	}
-	return Float64Value{v}
-}
-
 // Float64Value represents a heap-allocated 64-bit float (JS_TAG_FLOAT64)
 type Float64Value struct{ v float64 }
 
@@ -68,17 +51,35 @@ func (v Float64Value) Tag() Tag { return JS_TAG_FLOAT64 }
 func (v Float64Value) String() string { return formatNumber(v.v) }
 func (v Float64Value) Float() float64 { return v.v }
 
-// Predicate helpers
+// FunctionValue represents a JavaScript function (JS_TAG_FUNCTION_BYTECODE)
+type FunctionValue struct {
+	info interface{}
+}
+
+func MakeFunction(info interface{}) JSValue { return FunctionValue{info: info} }
+func (v FunctionValue) Tag() Tag { return JS_TAG_FUNCTION_BYTECODE }
+func (v FunctionValue) String() string { return "[Function]" }
+func (v FunctionValue) Info() interface{} { return v.info }
+
+// Constructor functions
+func NewInt(v int64) JSValue { return IntValue(v) }
+
+func NewFloat(v float64) JSValue {
+	if v == float64(int64(v)) && v >= -9007199254740992 && v <= 9007199254740992 {
+		return IntValue(int64(v))
+	}
+	return Float64Value{v}
+}
+
 func True() JSValue  { return BoolValue(true) }
 func False() JSValue { return BoolValue(false) }
 
-// --- Helper Functions ---
-
+// Helper functions
 func formatNumber(f float64) string {
-	if f != f { // NaN check
+	if f != f {
 		return "NaN"
 	}
-	if f == 1e300 || f == -1e300 { // Infinity
+	if f == 1e300 || f == -1e300 {
 		if f > 0 {
 			return "Infinity"
 		}

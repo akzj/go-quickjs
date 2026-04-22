@@ -28,12 +28,11 @@ func (vm *VM) Run() value.JSValue {
 		return value.Undefined()
 	}
 
-	for vm.frame.PC < len(vm.frame.Bytecode.Code) {
-		op := opcode.Opcode(vm.frame.Bytecode.Code[vm.frame.PC])
+	for vm.frame.PC < len(vm.frame.Bytecode()) {
+		op := opcode.Opcode(vm.frame.Bytecode()[vm.frame.PC])
 		vm.frame.PC++
 
 		if !vm.executeOp(op) {
-			// VM stopped (return or error)
 			break
 		}
 	}
@@ -48,13 +47,13 @@ func (vm *VM) Run() value.JSValue {
 func (vm *VM) executeOp(op opcode.Opcode) bool {
 	switch op {
 	case opcode.OP_push_i32:
-		v := opcode.ReadI32(vm.frame.Bytecode.Code, &vm.frame.PC)
+		v := opcode.ReadI32(vm.frame.Bytecode(), &vm.frame.PC)
 		vm.push(value.NewInt(int64(v)))
 
 	case opcode.OP_push_const:
-		idx := opcode.ReadU32(vm.frame.Bytecode.Code, &vm.frame.PC)
-		if int(idx) < len(vm.frame.Bytecode.Pool) {
-			vm.push(vm.frame.Bytecode.Pool[idx])
+		idx := opcode.ReadU32(vm.frame.Bytecode(), &vm.frame.PC)
+		if int(idx) < vm.frame.PoolLen() {
+			vm.push(vm.frame.PoolVal(int(idx)))
 		} else {
 			vm.push(value.Undefined())
 		}
@@ -179,55 +178,110 @@ func (vm *VM) executeOp(op opcode.Opcode) bool {
 		v := vm.peek()
 		vm.push(v)
 
-	// === Category 7: Variables ===
 	case opcode.OP_get_var_undef:
-		idx := opcode.ReadU16(vm.frame.Bytecode.Code, &vm.frame.PC)
-		// Look up variable by index
-		if int(idx) < len(vm.frame.Locals) {
-			vm.push(vm.frame.Locals[idx])
+		idx := opcode.ReadU16(vm.frame.Bytecode(), &vm.frame.PC)
+		if int(idx) < vm.frame.LocalsLen() {
+			vm.push(vm.frame.LocalsVal(int(idx)))
 		} else {
 			vm.push(value.Undefined())
 		}
 
 	case opcode.OP_put_var, opcode.OP_put_var_init:
-		idx := opcode.ReadU16(vm.frame.Bytecode.Code, &vm.frame.PC)
+		idx := opcode.ReadU16(vm.frame.Bytecode(), &vm.frame.PC)
 		v := vm.pop()
-		// Set local variable by index
-		if idx >= uint16(len(vm.frame.Locals)) {
-			// Expand locals array
-			newLocals := make([]value.JSValue, idx+1)
-			copy(newLocals, vm.frame.Locals)
-			vm.frame.Locals = newLocals
-		}
-		vm.frame.Locals[idx] = v
+		vm.frame.SetLocal(int(idx), v)
 
-	// === Category 8: Control Flow ===
 	case opcode.OP_goto:
-		offset := opcode.ReadI32(vm.frame.Bytecode.Code, &vm.frame.PC)
+		offset := opcode.ReadI32(vm.frame.Bytecode(), &vm.frame.PC)
 		vm.frame.PC += int(offset)
 
 	case opcode.OP_if_false:
-		offset := opcode.ReadI32(vm.frame.Bytecode.Code, &vm.frame.PC)
+		offset := opcode.ReadI32(vm.frame.Bytecode(), &vm.frame.PC)
 		v := vm.pop()
 		if !value.ToBool(v) {
 			vm.frame.PC += int(offset)
 		}
 
 	case opcode.OP_if_true:
-		offset := opcode.ReadI32(vm.frame.Bytecode.Code, &vm.frame.PC)
+		offset := opcode.ReadI32(vm.frame.Bytecode(), &vm.frame.PC)
 		v := vm.pop()
 		if value.ToBool(v) {
 			vm.frame.PC += int(offset)
 		}
 
-	case opcode.OP_return, opcode.OP_ret:
-		// For simple eval, just return
+	case opcode.OP_return:
 		return false
+
+	case opcode.OP_ret:
+		return false
+
+	case opcode.OP_push_func:
+		idx := opcode.ReadU32(vm.frame.Bytecode(), &vm.frame.PC)
+		if int(idx) < vm.frame.PoolLen() {
+			vm.push(vm.frame.PoolVal(int(idx)))
+		} else {
+			vm.push(value.Undefined())
+		}
+
+	case opcode.OP_call0, opcode.OP_call1, opcode.OP_call2:
+		nArgs := int(op - opcode.OP_call0)
+		vm.callFunction(nArgs)
+
+	case opcode.OP_call:
+		nArgs := int(opcode.ReadU16(vm.frame.Bytecode(), &vm.frame.PC))
+		vm.callFunction(nArgs)
 
 	default:
 		panic(fmt.Sprintf("unimplemented opcode: %v", op))
 	}
 	return true
+}
+
+// callFunction handles function calls
+func (vm *VM) callFunction(nArgs int) {
+	args := make([]value.JSValue, nArgs)
+	for i := nArgs - 1; i >= 0; i-- {
+		args[i] = vm.pop()
+	}
+
+	fn := vm.pop()
+	if fn == nil {
+		fn = value.Undefined()
+	}
+
+	switch f := fn.(type) {
+	case value.FunctionValue:
+		info := f.Info()
+		if info == nil {
+			vm.push(value.Undefined())
+			return
+		}
+		funcInfo, ok := info.(*FunctionInfo)
+		if !ok {
+			vm.push(value.Undefined())
+			return
+		}
+
+		savedFrame := vm.frame
+		vm.frame = &StackFrame{
+			Bytecode_: funcInfo.Bytecode,
+			PC:        0,
+			Locals_:   make([]value.JSValue, funcInfo.Bytecode.VarCount),
+		}
+
+		vm.Run()
+
+		retVal := value.Undefined()
+		if len(vm.stack) > 0 {
+			retVal = vm.pop()
+		}
+
+		vm.frame = savedFrame
+		vm.push(retVal)
+
+	default:
+		vm.push(value.Undefined())
+	}
 }
 
 func (vm *VM) push(v value.JSValue) {
