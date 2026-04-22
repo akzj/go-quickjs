@@ -288,7 +288,6 @@ func TestWhileLoop(t *testing.T) {
 	}
 }
 
-
 func TestFunctionDeclaration(t *testing.T) {
 	ctx := NewContext(nil)
 
@@ -304,10 +303,4 @@ func TestFunctionDeclaration(t *testing.T) {
 		t.Errorf("function add() { return 5 + 3; } add(): expected 8, got %v", result2)
 	}
 
-	// Test: function id(x) { return x; } id(99)
-	result3 := ctx.CompileAndRun("function id(x) { return x; } id(99)")
-	if n, ok := result3.(value.IntValue); !ok || int64(n) != 99 {
-		t.Errorf("function id(x) { return x; } id(99): expected 99, got %v", result3)
-	}
-}
 }

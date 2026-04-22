@@ -6,8 +6,6 @@ import (
 	"github.com/akzj/go-quickjs/pkg/value"
 )
 
-
-
 // Bytecode represents compiled JavaScript code
 type Bytecode struct {
 	Code     []byte          // instruction bytes
@@ -147,6 +145,7 @@ func (c *Compiler) parseFunction() {
 	for c.peek().Type != lexer.TokenRightBrace && c.peek().Type != lexer.TokenEof {
 		c.parseStatement()
 	}
+	c.expect(lexer.TokenRightBrace) // consume '}'
 
 	if len(c.bc.Code) == 0 || c.bc.Code[len(c.bc.Code)-1] != byte(opcode.OP_return) {
 		c.bc.Code = append(c.bc.Code, byte(opcode.OP_return))
@@ -290,7 +289,8 @@ func (c *Compiler) parseAssignment() {
 	if tok.Type == lexer.TokenIdent {
 		savedPos := c.pos
 		c.next()
-		if c.peek().Type == lexer.TokenAssign {
+		nextTok := c.peek()
+		if nextTok.Type == lexer.TokenAssign {
 			c.next()
 			name := tok.Str
 			idx := c.registerVar(name)
@@ -298,6 +298,7 @@ func (c *Compiler) parseAssignment() {
 			c.emitU16(opcode.OP_put_var, uint16(idx))
 			return
 		}
+		// Restore position for function call or other cases
 		c.pos = savedPos
 	}
 	c.parseComparison()
