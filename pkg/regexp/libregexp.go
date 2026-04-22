@@ -110,56 +110,56 @@ const ClassRangeBase = 0x40000000
 // Opcodes (from libregexp-opcode.h)
 // ============================================================================
 
-// OpCode identifies bytecode operations
+// OpCode identifies bytecode operations (matching QuickJS libregexp-opcode.h)
 type OpCode int
 
 const (
-	OpInvalid OpCode = iota
-	OpChar
-	OpCharI
-	OpChar32
-	OpChar32I
-	OpDot
-	OpAny
-	OpSpace
-	OpNotSpace
-	OpLineStart
-	OpLineStartM
-	OpLineEnd
-	OpLineEndM
-	OpGoto
-	OpSplitGotoFirst
-	OpSplitNextFirst
-	OpMatch
-	OpLookaheadMatch
-	OpNegativeLookaheadMatch
-	OpSaveStart
-	OpSaveEnd
-	OpSaveReset
-	OpLoop
-	OpLoopSplitGotoFirst
-	OpLoopSplitNextFirst
-	OpLoopCheckAdvSplitGotoFirst
-	OpLoopCheckAdvSplitNextFirst
-	OpSetI32
-	OpWordBoundary
-	OpWordBoundaryI
-	OpNotWordBoundary
-	OpNotWordBoundaryI
-	OpBackReference
-	OpBackReferenceI
-	OpBackwardBackReference
-	OpBackwardBackReferenceI
-	OpRange
-	OpRangeI
-	OpRange32
-	OpRange32I
-	OpLookahead
-	OpNegativeLookahead
-	OpSetCharPos
-	OpCheckAdvance
-	OpPrev
-	OpCount
+	OpInvalid                      OpCode = 0
+	OpChar                         OpCode = 1
+	OpCharI                        OpCode = 2
+	OpChar32                       OpCode = 3
+	OpChar32I                      OpCode = 4
+	OpDot                          OpCode = 5
+	OpAny                          OpCode = 6
+	OpSpace                        OpCode = 7
+	OpNotSpace                     OpCode = 8
+	OpLineStart                    OpCode = 9
+	OpLineStartM                   OpCode = 10
+	OpLineEnd                      OpCode = 11
+	OpLineEndM                     OpCode = 12
+	OpGoto                         OpCode = 13
+	OpSplitGotoFirst               OpCode = 14
+	OpSplitNextFirst               OpCode = 15
+	OpMatch                        OpCode = 16
+	OpLookaheadMatch               OpCode = 17
+	OpNegativeLookaheadMatch       OpCode = 18
+	OpSaveStart                    OpCode = 19
+	OpSaveEnd                      OpCode = 20
+	OpSaveReset                    OpCode = 21
+	OpLoop                         OpCode = 22
+	OpLoopSplitGotoFirst           OpCode = 23
+	OpLoopSplitNextFirst           OpCode = 24
+	OpLoopCheckAdvSplitGotoFirst   OpCode = 25
+	OpLoopCheckAdvSplitNextFirst   OpCode = 26
+	OpSetI32                       OpCode = 27
+	OpWordBoundary                 OpCode = 28
+	OpWordBoundaryI               OpCode = 29
+	OpNotWordBoundary             OpCode = 30
+	OpNotWordBoundaryI            OpCode = 31
+	OpBackReference                OpCode = 32
+	OpBackReferenceI               OpCode = 33
+	OpBackwardBackReference        OpCode = 34
+	OpBackwardBackReferenceI       OpCode = 35
+	OpRange                        OpCode = 36
+	OpRangeI                       OpCode = 37
+	OpRange32                      OpCode = 38
+	OpRange32I                     OpCode = 39
+	OpLookahead                    OpCode = 40
+	OpNegativeLookahead            OpCode = 41
+	OpSetCharPos                   OpCode = 42
+	OpCheckAdvance                 OpCode = 43
+	OpPrev                         OpCode = 44
+	OpCount                        OpCode = 45
 )
 
 // Opcode sizes
@@ -311,6 +311,7 @@ func (bb *byteBuffer) putC(c byte) {
 	if bb.error {
 		return
 	}
+	fmt.Printf("DEBUG putC: c=0x%02x ('%c'), size before=%d\n", c, c, bb.size)
 	if len(bb.buf)-bb.size < 1 {
 		if bb.claim(1) != 0 {
 			return
@@ -318,6 +319,7 @@ func (bb *byteBuffer) putC(c byte) {
 	}
 	bb.buf[bb.size] = c
 	bb.size++
+	fmt.Printf("DEBUG putC: size after=%d\n", bb.size)
 }
 
 func (bb *byteBuffer) putU16(val uint16) {
@@ -556,7 +558,9 @@ func lreCompile(buf string, reFlags int, opaque interface{}) ([]byte, string) {
 	}
 
 	s.emitOpU8(OpSaveEnd, 0)
+	fmt.Printf("DEBUG lreCompile: after OpSaveEnd(0), len=%d\n", s.byteCode.len())
 	s.emitOp(OpMatch)
+	fmt.Printf("DEBUG lreCompile: after OpMatch, final len=%d\n", s.byteCode.len())
 
 	if len(s.bufPtr) != 0 {
 		s.errorMsg = "extraneous characters at the end"
@@ -576,9 +580,11 @@ func lreCompile(buf string, reFlags int, opaque interface{}) ([]byte, string) {
 
 	// Fill in header
 	bc = s.byteCode.bytes()
+	fmt.Printf("DEBUG lreCompile: before header fill, bc[2]=0x%02x, bc[3]=0x%02x, len(bc)=%d\n", bc[2], bc[3], len(bc))
 	bc[HeaderCaptureCount] = byte(s.captureCount)
 	bc[HeaderRegisterCount] = byte(registerCount)
 	cutils.PutU32(bc[HeaderBytecodeLen:], uint32(len(bc)-HeaderLen))
+	fmt.Printf("DEBUG lreCompile: after header fill, bc[2]=0x%02x, bc[3]=0x%02x, registerCount=%d\n", bc[2], bc[3], registerCount)
 
 	// Add named groups if present
 	if s.groupNames.len() > (s.captureCount-1)*GroupNameTrailerLen {
@@ -600,12 +606,16 @@ error:
 // ============================================================================
 
 func (s *parseState) emitOp(op OpCode) {
+	fmt.Printf("DEBUG emitOp: op=%d (%v), len before=%d\n", op, op, s.byteCode.len())
 	s.byteCode.putC(byte(op))
+	fmt.Printf("DEBUG emitOp: len after=%d\n", s.byteCode.len())
 }
 
 func (s *parseState) emitOpU8(op OpCode, val uint8) {
+	fmt.Printf("DEBUG emitOpU8: op=%d (%v), val=%d, len before=%d\n", op, op, val, s.byteCode.len())
 	s.byteCode.putC(byte(op))
 	s.byteCode.putC(val)
+	fmt.Printf("DEBUG emitOpU8: len after=%d\n", s.byteCode.len())
 }
 
 func (s *parseState) emitOpU16(op OpCode, val uint16) {
@@ -698,6 +708,7 @@ func (s *parseState) parseDigits(allowOverflow bool) (int, error) {
 // ============================================================================
 
 func (s *parseState) parseDisjunction(isBackwardDir bool) int {
+	fmt.Printf("DEBUG parseDisjunction ENTRY: bufPtr='%s' (len=%d), byteCode.len()=%d\n", string(s.bufPtr), len(s.bufPtr), s.byteCode.len())
 	start := s.byteCode.len()
 
 	if s.parseAlternative(isBackwardDir) != 0 {
@@ -821,8 +832,17 @@ func (s *parseState) parseTerm(isBackwardDir bool) int {
 		if escResult < 0 {
 			return -1
 		}
+		// Set atom tracking info before checking for close paren
 		lastAtomStart = escResult
 		lastCaptureCount = s.captureCount
+
+		// If bufPtr is empty (backreference consumed digit) or at ')',
+		// or NOT at a quantifier, return to caller
+		if len(s.bufPtr) == 0 || s.bufPtr[0] == ')' ||
+			(s.bufPtr[0] != '?' && s.bufPtr[0] != '*' && s.bufPtr[0] != '+') {
+			return 0
+		}
+		// bufPtr[0] is a quantifier - fall through to parseQuantifier
 
 	default:
 		// Regular character - treat as atom
@@ -948,22 +968,30 @@ func (s *parseState) parseGroup() int {
 	lastCaptureCount := s.captureCount
 	captureIndex := s.captureCount
 	s.captureCount++
+	fmt.Printf("DEBUG parseGroup: captureIndex=%d, lastAtomStart=%d, byteCode.len()=%d\n", captureIndex, lastAtomStart, s.byteCode.len())
 
 	s.emitOpU8(OpSaveStart, uint8(captureIndex))
+	fmt.Printf("DEBUG parseGroup: after OpSaveStart, byteCode.len()=%d\n", s.byteCode.len())
 
 	if s.parseDisjunction(false) != 0 {
 		return -1
 	}
 
+	fmt.Printf("DEBUG parseGroup ) check: bufPtr[0]='%c' (0x%02x)\n", s.bufPtr[0], s.bufPtr[0])
 	if len(s.bufPtr) == 0 || s.bufPtr[0] != ')' {
 		s.errorMsg = "expecting ')'"
+		fmt.Printf("DEBUG parseGroup ERROR: %s\n", s.errorMsg)
 		return -1
 	}
 	s.bufPtr = s.bufPtr[1:]
 
 	s.emitOpU8(OpSaveEnd, uint8(captureIndex))
 
-	return s.parseQuantifier(lastAtomStart, lastCaptureCount)
+	// Only call parseQuantifier if there's actually a quantifier following
+	if len(s.bufPtr) > 0 && (s.bufPtr[0] == '?' || s.bufPtr[0] == '*' || s.bufPtr[0] == '+') {
+		return s.parseQuantifier(lastAtomStart, lastCaptureCount)
+	}
+	return 0
 }
 
 func boolToInt(b bool) int {
@@ -1017,6 +1045,8 @@ func (s *parseState) parseEscapeSequence() int {
 
 	c := s.bufPtr[0]
 	s.bufPtr = s.bufPtr[1:]
+	
+	fmt.Printf("DEBUG parseEscapeSequence: c='%c' (0x%x), bufPtr now starts with='%s'\n", c, c, string(s.bufPtr))
 
 	switch c {
 	case 'b':
@@ -1025,12 +1055,14 @@ func (s *parseState) parseEscapeSequence() int {
 		} else {
 			s.emitOp(OpNotWordBoundary)
 		}
+		return atomStart
 	case 'B':
 		if s.ignoreCase && s.isUnicode {
 			s.emitOp(OpWordBoundaryI)
 		} else {
 			s.emitOp(OpWordBoundary)
 		}
+		return atomStart
 	case 'k':
 		// Named back reference
 		if len(s.bufPtr) < 2 || s.bufPtr[0] != '<' {
@@ -1044,20 +1076,24 @@ func (s *parseState) parseEscapeSequence() int {
 			return -1
 		}
 		// Emit placeholder back reference
-		s.emitOpU8(OpBackReference, 1)
+		s.emitOp(OpBackReference)
 		s.byteCode.putC(1)
+		return s.byteCode.len()
 	case '0':
 		// Null character
 		s.emitChar(0)
+		return atomStart
 	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
-		// Back reference or octal - use parseAtom to handle
+		// Back reference or octal - delegate to parseBackRefOctal
 		s.bufPtr = append([]byte{c}, s.bufPtr...)
-		return s.parseAtom(false)
+		fmt.Printf("DEBUG parseEscapeSequence: calling parseBackRefOctal with c='%c', bufPtr now='%s'\n", c, string(s.bufPtr))
+		return s.parseBackRefOctal(c)
 	case 'd': // \d - digit 0-9
 		s.emitOp(OpRange)
 		s.byteCode.putU16(1)
 		s.byteCode.putU16(0x0030)
 		s.byteCode.putU16(0x0039)
+		return atomStart
 	case 'D': // \D - non-digit (anything except 0-9)
 		s.emitOp(OpRange)
 		s.byteCode.putU16(2) // 2 ranges
@@ -1065,10 +1101,13 @@ func (s *parseState) parseEscapeSequence() int {
 		s.byteCode.putU16(0x002F) // before '0'
 		s.byteCode.putU16(0x003A)
 		s.byteCode.putU16(0xFFFF) // after ':'
+		return atomStart
 	case 's': // \s - whitespace
 		s.emitOp(OpSpace)
+		return atomStart
 	case 'S': // \S - non-whitespace (anything except whitespace)
 		s.emitOp(OpNotSpace)
+		return atomStart
 	case 'w': // \w - word character: 0-9, A-Z, _, a-z
 		s.emitOp(OpRange)
 		s.byteCode.putU16(4) // 4 ranges
@@ -1080,6 +1119,7 @@ func (s *parseState) parseEscapeSequence() int {
 		s.byteCode.putU16(0x005F)
 		s.byteCode.putU16(0x0061)
 		s.byteCode.putU16(0x007A)
+		return atomStart
 	case 'W': // \W - non-word character (everything except 0-9, A-Z, _, a-z)
 		s.emitOp(OpRange)
 		s.byteCode.putU16(5) // 5 ranges
@@ -1093,18 +1133,24 @@ func (s *parseState) parseEscapeSequence() int {
 		s.byteCode.putU16(0x0060)
 		s.byteCode.putU16(0x007B) // after 'z'
 		s.byteCode.putU16(0xFFFF)
+		return atomStart
 	case 'n':
 		s.emitChar('\n')
+		return atomStart
 	case 'r':
 		s.emitChar('\r')
+		return atomStart
 	case 't':
 		s.emitChar('\t')
+		return atomStart
 	default:
 		// Unknown escape - treat as literal character
 		s.bufPtr = append([]byte{c}, s.bufPtr...)
 		return s.parseAtom(false)
 	}
 
+	// This line is never reached since all cases return,
+	// but Go requires a return statement
 	return atomStart
 }
 
@@ -1112,19 +1158,35 @@ func (s *parseState) parseBackRefOctal(firstDigit byte) int {
 	// Parse the number
 	num := int(firstDigit - '0')
 
+	// DEBUG
+	fmt.Printf("DEBUG parseBackRefOctal: num=%d, captureCount=%d, isUnicode=%v, byteCode.len()=%d\n", num, s.captureCount, s.isUnicode, s.byteCode.len())
+
 	// Check if it's a back reference
-	if num < s.captureCount {
-		// Back reference
+	// captureCount counts groups from 0, so \1 means group index 1, captureCount must be >= 2
+	// (group 0 is always the whole match, groups start at 1)
+	fmt.Printf("DEBUG parseBackRefOctal CHECK: num=%d, captureCount=%d, willTakeBranch=%v\n", num, s.captureCount, num >= 1 && num <= s.captureCount)
+	if num >= 1 && num <= s.captureCount {
+		// Back reference - return the end position of the instruction
 		if s.ignoreCase {
-			s.emitOpU8(OpBackReferenceI, 1)
+			s.emitOp(OpBackReferenceI)
 		} else {
-			s.emitOpU8(OpBackReference, 1)
+			s.emitOp(OpBackReference)
 		}
 		s.byteCode.putC(byte(num))
-		return 0
+
+		// Advance bufPtr past any remaining digits of the backreference
+		// (we prepended the first digit in parseEscapeSequence)
+		for len(s.bufPtr) > 0 && s.bufPtr[0] >= '0' && s.bufPtr[0] <= '9' {
+			s.bufPtr = s.bufPtr[1:]
+		}
+
+		return s.byteCode.len() // return end position
 	}
 
-	// Check for octal
+	fmt.Printf("DEBUG: MISSED backref branch - num=%d, captureCount=%d\n", num, s.captureCount)
+
+	// Check for octal (only if NOT a valid back reference)
+	// Only allow octal escapes for numbers 0-7, and only outside unicode mode
 	if !s.isUnicode && num <= 7 {
 		// Legacy octal escape
 		c := num
@@ -1140,9 +1202,11 @@ func (s *parseState) parseBackRefOctal(firstDigit byte) int {
 		return 0
 	}
 
-	// Invalid back reference
-	s.errorMsg = "invalid back reference"
-	return -1
+	// Not a valid back reference and not a valid octal escape
+	// Emit the digit as a literal character
+	fmt.Printf("DEBUG falling through to emitChar for '%c'\n", '0'+num)
+	s.emitChar('0' + num)
+	return 0
 }
 
 // ============================================================================
@@ -1184,12 +1248,21 @@ func (s *parseState) parseAtom(isBackwardDir bool) int {
 			s.emitOp(OpSpace)
 		case 3: // \S
 			s.emitOp(OpNotSpace)
-		case 4: // \w
+		case 4: // \w = [0-9A-Z_a-z]
 			s.emitOp(OpRange)
-			s.byteCode.putU16(1)
+			s.byteCode.putU16(4) // 4 ranges
+			// range 0: 0-9
 			s.byteCode.putU16(0x0030)
-			s.byteCode.putU16(0x003A)
-			// Plus A-Z, _, a-z - simplified
+			s.byteCode.putU16(0x0039)
+			// range 1: A-Z
+			s.byteCode.putU16(0x0041)
+			s.byteCode.putU16(0x005A)
+			// range 2: _
+			s.byteCode.putU16(0x005F)
+			s.byteCode.putU16(0x005F)
+			// range 3: a-z
+			s.byteCode.putU16(0x0061)
+			s.byteCode.putU16(0x007A)
 		case 5: // \W
 			s.emitOp(OpNotSpace) // Simplified
 		}
@@ -1390,34 +1463,29 @@ func (s *parseState) parseCharClass() int {
 // Quantifiers
 // ============================================================================
 
-// TODO: implement quantifier bytecode emission using computed min/max
 func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 	if len(s.bufPtr) == 0 {
 		return 0
 	}
 
 	quantMin := 0
-	quantMax := 1 // default for ? is {0,1}
+	quantMax := 1
 	isGreedy := true
 
 	switch s.bufPtr[0] {
 	case '*':
-		// Zero or more: {0, max_int}
 		s.bufPtr = s.bufPtr[1:]
 		quantMin = 0
-		quantMax = 0x7FFFFFFF // INT32_MAX
+		quantMax = 0x7FFFFFFF
 	case '+':
-		// One or more: {1, max_int}
 		s.bufPtr = s.bufPtr[1:]
 		quantMin = 1
 		quantMax = 0x7FFFFFFF
 	case '?':
-		// Zero or one: {0, 1}
 		s.bufPtr = s.bufPtr[1:]
 		quantMin = 0
 		quantMax = 1
 	case '{':
-		// Parse {n,m} quantifier
 		s.bufPtr = s.bufPtr[1:]
 		minVal, err := s.parseDigits(true)
 		if err != nil {
@@ -1426,7 +1494,6 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 		}
 		quantMin = minVal
 		quantMax = minVal
-
 		if len(s.bufPtr) > 0 && s.bufPtr[0] == ',' {
 			s.bufPtr = s.bufPtr[1:]
 			if len(s.bufPtr) > 0 && s.bufPtr[0] >= '0' && s.bufPtr[0] <= '9' {
@@ -1437,7 +1504,7 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 				}
 				quantMax = maxVal
 			} else {
-				quantMax = 0x7FFFFFFF // {n,} means unlimited
+				quantMax = 0x7FFFFFFF
 			}
 		}
 		if len(s.bufPtr) == 0 || s.bufPtr[0] != '}' {
@@ -1455,66 +1522,92 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 		isGreedy = false
 	}
 
-	// Calculate atom size BEFORE emitting split
+	// Calculate atom size
 	atomLen := s.byteCode.len() - lastAtomStart
 
+	// If no atom content (e.g., after backreference), skip quantifier processing
+	if atomLen == 0 {
+		return 0
+	}
+
 	if quantMax == 0 {
-		// No matches allowed, remove the atom bytecode
 		s.byteCode.size = lastAtomStart
 		return 0
 	}
 
-	// Simple case: exactly one match (no quantifier needed)
 	if quantMin == 1 && quantMax == 1 {
 		return 0
 	}
 
-	// C QuickJS structure: INSERT split at atom START, not append after atom
-	// has_goto: * and + need a goto after atom to loop back
-	// no goto: ? doesn't need goto - next instruction follows atom
-	hasGoto := (quantMax == 0x7FFFFFFF) // * and +
-	needsSplit := (quantMin == 0)       // only * and ? need split to skip atom
-
-	// For greedy quantifiers (* and +), use OpSplitNextFirst
-	// This executes atom first (ensuring min match for +), then tries to skip
-	// For non-greedy (*? and +?), use OpSplitGotoFirst
-	// This tries to skip first, then executes atom (min match last)
-	splitOp := OpSplitNextFirst
-	if !isGreedy {
-		splitOp = OpSplitGotoFirst
+	// Choose opcode based on greedy/non-greedy
+	// C QuickJS: s->byte_code.buf[last_atom_start] = REOP_split_goto_first + greedy;
+	// So: greedy=TRUE → REOP_split_goto_first+1 = REOP_split_next_first
+	//     greedy=FALSE → REOP_split_goto_first+0 = REOP_split_goto_first
+	splitOp := OpSplitGotoFirst
+	if isGreedy {
+		splitOp = OpSplitNextFirst
 	}
 
+	// C QuickJS implementation for different quantifier types:
 
-
-	// For quantMin == 0 (* and ?), emit split + goto
-	insertLen := 5 // split opcode + offset
-	if hasGoto {
-		insertLen += 5 // add goto opcode + offset
+	// Case 1: + quantifier (quantMin=1, quantMax=unbounded)
+	// Structure: atom at lastAtomStart -> Split at lastAtomStart+atomLen jumps back
+	// After VM does pc += 4 to skip offset, pc = currentLen + 4
+	// splitPc = pc + offset = currentLen + 4 + offset = lastAtomStart
+	// So offset = lastAtomStart - (currentLen + 4)
+	if quantMin == 1 && quantMax == 0x7FFFFFFF {
+		currentLen := s.byteCode.len()
+		s.byteCode.putC(byte(splitOp))
+		offset := int32(lastAtomStart - (currentLen + 4))
+		s.byteCode.putU32(uint32(offset))
+		return 0
 	}
 
+	// Case 2: * quantifier (quantMin=0, quantMax=unbounded)
+	// Structure: Split -> atom -> Goto -> ...
+	if quantMin == 0 && quantMax == 0x7FFFFFFF {
+		if s.byteCode.insert(lastAtomStart, 10) != 0 {
+			s.errorMsg = "out of memory"
+			return -1
+		}
+		s.byteCode.buf[lastAtomStart] = byte(splitOp)
+		cutils.PutU32(s.byteCode.buf[lastAtomStart+1:], uint32(atomLen+5))
+		gotoPos := lastAtomStart + 5 + atomLen
+		s.byteCode.buf[gotoPos] = byte(OpGoto)
+		cutils.PutU32(s.byteCode.buf[gotoPos+1:], uint32(-(5+atomLen)))
+		return 0
+	}
+
+	// Case 3: ? quantifier (quantMin=0, quantMax=1)
+	if quantMin == 0 && quantMax == 1 {
+		if s.byteCode.insert(lastAtomStart, 5) != 0 {
+			s.errorMsg = "out of memory"
+			return -1
+		}
+		s.byteCode.buf[lastAtomStart] = byte(splitOp)
+		cutils.PutU32(s.byteCode.buf[lastAtomStart+1:], uint32(atomLen))
+		return 0
+	}
+
+	// Case 4: Bounded quantifiers {n,m}
+	insertLen := 5
+	if quantMax == 0x7FFFFFFF {
+		insertLen += 5
+	}
 	if s.byteCode.insert(lastAtomStart, insertLen) != 0 {
 		s.errorMsg = "out of memory"
 		return -1
 	}
-
-	// Calculate split offset
-	// offset = atomLen [+ 5 if hasGoto] to jump from split to next instruction
-	splitOffset := atomLen
-	if hasGoto {
-		splitOffset += 5 // add space for goto instruction
-	}
-
-	fmt.Printf("DEBUG: parseQuantifier: lastAtomStart=%d, atomLen=%d, hasGoto=%v, splitOffset=%d\n",
-		lastAtomStart, atomLen, hasGoto, splitOffset)
 	s.byteCode.buf[lastAtomStart] = byte(splitOp)
-	cutils.PutU32(s.byteCode.buf[lastAtomStart+1:], uint32(splitOffset))
-
-	// If hasGoto, emit goto after atom (which was pushed forward by insert)
-	if hasGoto {
+	offset := atomLen
+	if quantMax == 0x7FFFFFFF {
+		offset += 5
+	}
+	cutils.PutU32(s.byteCode.buf[lastAtomStart+1:], uint32(offset))
+	if quantMax == 0x7FFFFFFF {
 		gotoPos := lastAtomStart + 5 + atomLen
 		s.byteCode.buf[gotoPos] = byte(OpGoto)
-		// goto offset = -atomLen to jump back to atom start
-		cutils.PutU32(s.byteCode.buf[gotoPos+1:], uint32(-atomLen))
+		cutils.PutU32(s.byteCode.buf[gotoPos+1:], uint32(-(5+atomLen)))
 	}
 
 	return 0
@@ -1689,6 +1782,7 @@ type stackFrame struct {
 }
 
 func lreExec(capture [][]byte, bc []byte, cbuf []byte, cindex int, clen int, cbufType int, opaque interface{}) int {
+	fmt.Printf("DEBUG lreExec ENTRY: len(bc)=%d, bc[0:20]=%x\n", len(bc), bc[0:20])
 	if len(bc) < HeaderLen {
 		return RetMemoryError
 	}
@@ -1721,9 +1815,15 @@ func lreExec(capture [][]byte, bc []byte, cbuf []byte, cindex int, clen int, cbu
 
 	cptr := cbuf[cindex:]
 
+	fmt.Printf("DEBUG lreExec: bc len=%d, HeaderLen=%d, startPc=%d\n", len(bc), HeaderLen, HeaderLen+0)
+	
 	// Execute
 	pcOffset := 0
-	return lreExecBacktrack(&ctx, capture, bc, HeaderLen + pcOffset, &cptr, cbuf)
+	result := lreExecBacktrack(&ctx, capture, bc, HeaderLen + pcOffset, &cptr, cbuf)
+	
+	// Capture slices are already stored directly - no conversion needed
+	
+	return result
 }
 
 func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, startPc int, cptr *[]byte, cbuf []byte) int {
@@ -1733,38 +1833,67 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 	bytecodeLen := len(fullBytecode)
 
 	for {
-		// DEBUG: log stack state
 		if sp >= len(ctx.stackBuf)-10 {
 			// Grow stack
-			fmt.Printf("DEBUG: Growing stack: sp=%d oldLen=%d\n", sp, len(ctx.stackBuf))
 			if ctx.stackBuf == nil || &ctx.stackBuf[0] == &ctx.staticStack[0] {
 				newStack := make([]stackFrame, ctx.stackSize*3/2)
 				copy(newStack, ctx.stackBuf)
 				ctx.stackBuf = newStack
-				fmt.Printf("DEBUG: Grew to len=%d\n", len(ctx.stackBuf))
 			} else {
 				newStack := make([]stackFrame, ctx.stackSize*3/2)
 				copy(newStack, ctx.stackBuf)
 				ctx.stackBuf = newStack
-				fmt.Printf("DEBUG: Grew to len=%d\n", len(ctx.stackBuf))
 			}
 		}
 
 		if pc < 0 || pc >= bytecodeLen {
 			return RetNoMatch
 		}
+		oldPc := pc
 		op := OpCode(fullBytecode[pc])
 		pc += 1
 
 		// Ensure pc has enough bytes for this opcode
 		size, ok := opcodeSizes[op]
 		if !ok || (pc + (size - 1)) > bytecodeLen {
+			fmt.Printf("DEBUG: REJECTED at pc=%d, op=0x%x, size=%d, bytecodeLen=%d\n", oldPc, op, size, bytecodeLen)
 			return RetNoMatch
+		}
+		// Only print for opcodes around pc=44-50 range
+		if oldPc >= 40 && oldPc <= 50 {
+			fmt.Printf("DEBUG: pc=%d -> op=0x%x (%v), size=%d, new pc=%d\n", oldPc, op, op, size, pc)
 		}
 
 		switch op {
 		case OpMatch:
+			fmt.Printf("DEBUG: OpMatch at pc=%d\n", pc-1)
 			return RetMatch
+
+		case OpLoop:
+			// OpLoop: 6 bytes (1 opcode + 1 byte register + 4 byte offset)
+			// Counter register stores remaining iterations
+			idx := int(fullBytecode[pc])
+			pc++ // skip register byte
+			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
+			pc += 4 // skip offset bytes (pc now at next instruction)
+
+			// Decrement counter
+			if idx >= len(capture) || capture[idx] == nil {
+				goto backtrack
+			}
+			counter := len(capture[idx])
+			if counter <= 1 {
+				// Counter exhausted, don't loop
+				// (already consumed at least min iterations)
+			} else {
+				// More iterations remaining, jump back
+				newPc := pc + int(offset)
+				if newPc < 0 || newPc >= bytecodeLen {
+					goto backtrack
+				}
+				pc = newPc
+			}
+			continue
 
 		case OpChar, OpCharI, OpChar32, OpChar32I:
 			var val uint32
@@ -1869,11 +1998,9 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 			pc += 4 // advance past 4-byte offset operand
 			offset := int32(cutils.GetU32(fullBytecode[pc-4:pc]))
 			splitPc := pc + int(offset) // pc is now at instruction END
-			// DEBUG
 			if splitPc < 0 || splitPc >= bytecodeLen {
 				panic(fmt.Sprintf("split out of range: pc=%d offset=%d splitPc=%d bytecodeLen=%d", pc, offset, splitPc, bytecodeLen))
 			}
-			// DEBUG: check stack
 			if sp >= len(ctx.stackBuf) {
 				panic(fmt.Sprintf("stack overflow: sp=%d len=%d", sp, len(ctx.stackBuf)))
 			}
@@ -1899,7 +2026,6 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 			pc += 4 // advance past 4-byte offset operand
 			offset := int32(cutils.GetU32(fullBytecode[pc-4:pc]))
 			newPc := pc + int(offset) // pc is now at instruction END
-			// DEBUG
 			if newPc < 0 || newPc >= bytecodeLen {
 				panic(fmt.Sprintf("goto out of range: pc=%d offset=%d newPc=%d bytecodeLen=%d", pc, offset, newPc, bytecodeLen))
 			}
@@ -1909,11 +2035,14 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 			// OpSaveStart/OpSaveEnd are size 2 bytes: 1 byte opcode + 1 byte operand
 			idx := int(fullBytecode[pc])
 			pc += 1 // advance by 1 byte (total size 2 - 1 opcode)
+			fmt.Printf("DEBUG %v: idx=%d, cptr_len=%d\n", op, idx, len(*cptr))
 			if idx >= ctx.captureCount {
 				continue
 			}
 			capIdx := 2*idx + int(op-OpSaveStart)
-			capture[capIdx] = *cptr
+			// Store slice reference for public API compatibility
+			capture[capIdx] = (*cptr)[:len(*cptr):len(*cptr)]
+			fmt.Printf("DEBUG: capture[%d]=%q len=%d\n", capIdx, string(capture[capIdx]), len(capture[capIdx]))
 
 		case OpSaveReset:
 			val1 := int(fullBytecode[pc])
@@ -1929,11 +2058,13 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 		case OpRange, OpRangeI:
 			n := int(cutils.GetU16(fullBytecode[pc:pc+2]))
 			pc += 2
+			fmt.Printf("DEBUG OpRange: cptr_len=%d\n", len(*cptr))
 
 			if len(*cptr) == 0 {
 				goto backtrack
 			}
 			c := getChar(cptr, ctx.cbufType)
+			fmt.Printf("DEBUG OpRange: matched char '%c' (0x%x), remaining cptr_len=%d\n", rune(c), c, len(*cptr))
 
 			if op == OpRangeI {
 				c = quickunicode.LRECanonicalize(c, ctx.isUnicode)
@@ -2054,34 +2185,45 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 			}
 
 		case OpBackReference, OpBackReferenceI:
-			n := int(fullBytecode[pc])
-			pc += 1
-
-			// Simplified backreference handling
+			argPc := pc // arg is at current pc (pc was incremented after reading opcode)
+			n := int(fullBytecode[argPc])
+			pc += opcodeSizes[op] // advance past the whole instruction
+			fmt.Printf("DEBUG EXEC OpBackReference: pc=%d, argPc=%d, n=%d\n", pc-opcodeSizes[op], argPc, n)
 			if n >= ctx.captureCount {
 				goto backtrack
 			}
-
-			start := capture[2*n]
-			end := capture[2*n+1]
-			if start == nil || end == nil {
-				continue // Empty capture always matches
+			startSlice := capture[2*n]
+			endSlice := capture[2*n+1]
+			fmt.Printf("DEBUG: startSlice=%q (len=%d), endSlice=%q (len=%d)\n", string(startSlice), len(startSlice), string(endSlice), len(endSlice))
+			if len(startSlice) == 0 {
+				continue
 			}
-
-			// Compare with captured text
-			for len(start) < len(end) && len(*cptr) > 0 {
-				c1 := getChar(&start, ctx.cbufType)
+			capturedSlice := startSlice[:len(startSlice)-len(endSlice)]
+			fmt.Printf("DEBUG: capturedSlice=%q (len=%d)\n", string(capturedSlice), len(capturedSlice))
+			for len(capturedSlice) > 0 && len(*cptr) > 0 {
+				c1 := getChar(&capturedSlice, ctx.cbufType)
 				c2 := getChar(cptr, ctx.cbufType)
-
+				fmt.Printf("DEBUG: comparing c1='%c'(0x%x) vs c2='%c'(0x%x)\n", rune(c1), c1, rune(c2), c2)
 				if op == OpBackReferenceI {
 					c1 = quickunicode.LRECanonicalize(c1, ctx.isUnicode)
 					c2 = quickunicode.LRECanonicalize(c2, ctx.isUnicode)
 				}
-
 				if c1 != c2 {
+					fmt.Printf("DEBUG: mismatch, backtracking\n")
 					goto backtrack
 				}
 			}
+			fmt.Printf("DEBUG: after loop - capturedSlice len=%d, cptr len=%d\n", len(capturedSlice), len(*cptr))
+			if len(capturedSlice) > 0 {
+				fmt.Printf("DEBUG: capturedSlice not empty (%d chars left), backtracking\n", len(capturedSlice))
+				goto backtrack
+			}
+			fmt.Printf("DEBUG: BackReference matched successfully!\n")
+			fmt.Printf("DEBUG: about to continue, pc=%d, bytecodeLen=%d\n", pc, bytecodeLen)
+			if pc < bytecodeLen {
+				fmt.Printf("DEBUG: next op=%d\n", fullBytecode[pc])
+			}
+			continue
 
 		case OpPrev:
 			if len(*cptr) == 0 {
@@ -2101,7 +2243,6 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 			return RetNoMatch
 		}
 		sp--
-		// DEBUG
 		if sp < 0 || sp >= len(ctx.stackBuf) {
 			panic(fmt.Sprintf("backtrack stack underflow: sp=%d len=%d", sp, len(ctx.stackBuf)))
 		}
@@ -2109,7 +2250,6 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 		pc = frame.pc
 		*cptr = frame.cptr
 		bp = frame.bp
-		// DEBUG
 		if pc < 0 || pc >= bytecodeLen {
 			panic(fmt.Sprintf("backtrack invalid pc: pc=%d bytecodeLen=%d", pc, bytecodeLen))
 		}

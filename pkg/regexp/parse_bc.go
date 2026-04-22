@@ -91,6 +91,14 @@ func ParseBytecode(bc []byte) {
 			fmt.Printf("OpMatch")
 			pc++
 
+		case OpBackReference:
+			fmt.Printf("OpBackReference idx=%d", bc[pc+1])
+			pc += 2
+
+		case OpBackReferenceI:
+			fmt.Printf("OpBackReferenceI idx=%d", bc[pc+1])
+			pc += 2
+
 		default:
 			fmt.Printf("OP_%d (0x%02x)", op, op)
 			pc++

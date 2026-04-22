@@ -1,6 +1,7 @@
 package regexp
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -183,9 +184,22 @@ func TestBackReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile failed: %v", err)
 	}
+	fmt.Printf("TEST: bc len=%d\n", len(bc))
+	// Dump bytecode bytes
+	fmt.Printf("TEST bytecode: ")
+	for i := 0; i < len(bc); i++ {
+		fmt.Printf("[%d]=0x%02x ", i, bc[i])
+	}
+	fmt.Println()
 	capture := make([][]byte, GetAllocCount(bc))
 	
 	// Should match "aa", "bb", etc.
+	// Dump bytecode right before Match
+	fmt.Printf("TEST bytecode before Match: ")
+	for i := 0; i < len(bc); i++ {
+		fmt.Printf("[%d]=0x%02x ", i, bc[i])
+	}
+	fmt.Println()
 	result := Match(bc, []byte("aa"), 0, 0, nil, capture)
 	if result != RetMatch {
 		t.Errorf("BackReference 'aa' should match, got %d", result)
