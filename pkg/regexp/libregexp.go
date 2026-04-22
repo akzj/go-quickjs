@@ -533,12 +533,19 @@ func lreCompile(buf string, reFlags int, opaque interface{}) ([]byte, string) {
 	s.byteCode.putC(0) // register count
 	s.byteCode.putU32(0) // bytecode length
 
-	// If not sticky, add .*? at the beginning
+	// If not sticky, add .* at the beginning (non-greedy)
+	// Structure: split_goto_first -> any -> goto (loop back)
+	// split_goto_first: execute pattern path first, push any path to stack
+	// The goto jumps back to the split instruction (not save_start)
 	if !isSticky {
-		s.emitOpU32(OpSplitGotoFirst, 1+5)
-		s.emitOp(OpAny)
-		s.emitGoto(OpGoto, -(5 + 1 + 5))
+		s.emitOpU32(OpSplitGotoFirst, 1+5)  // split to skip 'any', push 'any' path
+		s.emitOp(OpAny)                       // consume one character
+		// goto: jump back to the split_goto_first instruction
+		// split=5 bytes, any=1 byte, goto=5 bytes
+		// offset = -(5 + 1 + 5) = -11 (C QuickJS behavior)
+		s.emitGotoRel(OpGoto, -int32(5+1+5)) // jump back to split_goto_first
 	}
+	// save_start is AFTER the non-sticky loop to capture correct position
 	s.emitOpU8(OpSaveStart, 0)
 
 	var bc []byte
@@ -630,10 +637,25 @@ func (s *parseState) patchU32(pos int, target int) {
 }
 
 // emitGoto emits a goto instruction with a relative offset (for backward references)
-// offset is already the relative distance from pc+4, store as-is
-func (s *parseState) emitGoto(op OpCode, offset int32) {
+// Formula: offset = targetPos - (goto_position + 5)
+// After pc += 4 in interpreter: pc = goto_position + 4
+// We want: target = pc + offset = (goto_position + 4) + offset
+// So: offset = target - (goto_position + 4)
+// putC increments size, so after putC: s.byteCode.size = goto_position + 1
+// offset = target - (s.byteCode.size - 1 + 4) = target - (s.byteCode.size + 3)
+func (s *parseState) emitGoto(op OpCode, targetPos int) {
 	s.byteCode.putC(byte(op))
-	s.byteCode.putU32(uint32(offset))
+	// After putC, s.byteCode.size = goto_position + 1
+	// After pc += 4 in interpreter: pc = goto_position + 4
+	// offset = target - (goto_position + 4) = target - (s.byteCode.size - 1 + 4) = target - (s.byteCode.size + 3)
+	relOffset := int32(targetPos - (s.byteCode.size + 3))
+	s.byteCode.putU32(uint32(relOffset))
+}
+
+// emitGotoRel emits a goto instruction with an ALREADY-COMPUTED relative offset (for OpGoto backward refs)
+func (s *parseState) emitGotoRel(op OpCode, relOffset int32) {
+	s.byteCode.putC(byte(op))
+	s.byteCode.putU32(uint32(relOffset))
 }
 
 // emitGotoForward emits a goto instruction with placeholder offset for forward references
@@ -686,6 +708,7 @@ func (s *parseState) parseDisjunction(isBackwardDir bool) int {
 		s.bufPtr = s.bufPtr[1:]
 
 		// Insert split before first alternative
+		// Use OpSplitNextFirst: try first alternative first, push second to stack
 		length := s.byteCode.len() - start
 		if s.byteCode.insert(start, 5) != 0 {
 			s.errorMsg = "out of memory"
@@ -693,11 +716,12 @@ func (s *parseState) parseDisjunction(isBackwardDir bool) int {
 		}
 		bc := s.byteCode.bytes()
 		bc[start] = byte(OpSplitNextFirst)
-		// Calculate split offset using formula
-		splitOffset := int32((start + 5 + length) - (start + 1 + 4))
+		// offset = split(5) + first_alt(length) + goto(5) - split_opcode(1) = length + 9
+		// C QuickJS uses: len + 5
+		splitOffset := int32(length + 5)
 		binary.LittleEndian.PutUint32(bc[start+1:], uint32(splitOffset))
 
-		// Emit forward goto
+		// Emit forward goto to skip second alternative
 		gotoPos := s.emitGotoForward(OpGoto)
 
 		s.groupNameScope++
@@ -793,9 +817,12 @@ func (s *parseState) parseTerm(isBackwardDir bool) int {
 		}
 
 	case '\\':
-		if s.parseEscapeSequence() != 0 {
+		escResult := s.parseEscapeSequence()
+		if escResult < 0 {
 			return -1
 		}
+		lastAtomStart = escResult
+		lastCaptureCount = s.captureCount
 
 	default:
 		// Regular character - treat as atom
@@ -976,14 +1003,17 @@ func (s *parseState) parseGroupName() (string, error) {
 
 // ============================================================================
 // Escape Sequences
-// ============================================================================
-
+// parseEscapeSequence parses escape sequences and returns the atom start position
+// Returns: atom_start_pos on success, -1 on error
 func (s *parseState) parseEscapeSequence() int {
 	s.bufPtr = s.bufPtr[1:] // skip '\'
 	if len(s.bufPtr) == 0 {
 		s.errorMsg = "unexpected end"
 		return -1
 	}
+
+	// Track atom start BEFORE emitting anything
+	atomStart := s.byteCode.len()
 
 	c := s.bufPtr[0]
 	s.bufPtr = s.bufPtr[1:]
@@ -1020,15 +1050,62 @@ func (s *parseState) parseEscapeSequence() int {
 		// Null character
 		s.emitChar(0)
 	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
-		// Back reference or octal
-		return s.parseBackRefOctal(c)
+		// Back reference or octal - use parseAtom to handle
+		s.bufPtr = append([]byte{c}, s.bufPtr...)
+		return s.parseAtom(false)
+	case 'd': // \d - digit 0-9
+		s.emitOp(OpRange)
+		s.byteCode.putU16(1)
+		s.byteCode.putU16(0x0030)
+		s.byteCode.putU16(0x0039)
+	case 'D': // \D - non-digit (anything except 0-9)
+		s.emitOp(OpRange)
+		s.byteCode.putU16(2) // 2 ranges
+		s.byteCode.putU16(0x0000)
+		s.byteCode.putU16(0x002F) // before '0'
+		s.byteCode.putU16(0x003A)
+		s.byteCode.putU16(0xFFFF) // after ':'
+	case 's': // \s - whitespace
+		s.emitOp(OpSpace)
+	case 'S': // \S - non-whitespace (anything except whitespace)
+		s.emitOp(OpNotSpace)
+	case 'w': // \w - word character: 0-9, A-Z, _, a-z
+		s.emitOp(OpRange)
+		s.byteCode.putU16(4) // 4 ranges
+		s.byteCode.putU16(0x0030)
+		s.byteCode.putU16(0x0039)
+		s.byteCode.putU16(0x0041)
+		s.byteCode.putU16(0x005A)
+		s.byteCode.putU16(0x005F)
+		s.byteCode.putU16(0x005F)
+		s.byteCode.putU16(0x0061)
+		s.byteCode.putU16(0x007A)
+	case 'W': // \W - non-word character (everything except 0-9, A-Z, _, a-z)
+		s.emitOp(OpRange)
+		s.byteCode.putU16(5) // 5 ranges
+		s.byteCode.putU16(0x0000) // before '0'
+		s.byteCode.putU16(0x002F)
+		s.byteCode.putU16(0x003A) // after '9'
+		s.byteCode.putU16(0x0040)
+		s.byteCode.putU16(0x005B) // after '['
+		s.byteCode.putU16(0x005E)
+		s.byteCode.putU16(0x0060) // after '`'
+		s.byteCode.putU16(0x0060)
+		s.byteCode.putU16(0x007B) // after 'z'
+		s.byteCode.putU16(0xFFFF)
+	case 'n':
+		s.emitChar('\n')
+	case 'r':
+		s.emitChar('\r')
+	case 't':
+		s.emitChar('\t')
 	default:
-		// Put character back and parse as atom
+		// Unknown escape - treat as literal character
 		s.bufPtr = append([]byte{c}, s.bufPtr...)
 		return s.parseAtom(false)
 	}
 
-	return 0
+	return atomStart
 }
 
 func (s *parseState) parseBackRefOctal(firstDigit byte) int {
@@ -1100,7 +1177,7 @@ func (s *parseState) parseAtom(isBackwardDir bool) int {
 			s.emitOp(OpRange)
 			s.byteCode.putU16(1)
 			s.byteCode.putU16(0x0030)
-			s.byteCode.putU16(0x003A)
+			s.byteCode.putU16(0x0039)
 		case 1: // \D
 			s.emitOp(OpNotSpace) // Simplified
 		case 2: // \s
@@ -1378,7 +1455,7 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 		isGreedy = false
 	}
 
-	// Emit quantifier bytecode - insert BEFORE the atom at lastAtomStart
+	// Calculate atom size BEFORE emitting split
 	atomLen := s.byteCode.len() - lastAtomStart
 
 	if quantMax == 0 {
@@ -1392,55 +1469,24 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 		return 0
 	}
 
-	// Insert quantifier bytecode at lastAtomStart (BEFORE the atom)
-	// This is how QuickJS does it - insert the split/goto structure before the atom
-	if s.byteCode.insert(lastAtomStart, 5) != 0 {
-		s.errorMsg = "out of memory"
-		return -1
+	// C QuickJS structure: emit atom, then split (with negative offset), then goto, then save_end
+	// For greedy: OpSplitGotoFirst tries atom first (execute pc first, push splitPc)
+	// For non-greedy: OpSplitNextFirst skips atom first (execute splitPc first, push pc)
+	splitOp := OpSplitGotoFirst
+	if !isGreedy {
+		splitOp = OpSplitNextFirst
 	}
-	bc := s.byteCode.bytes()
 
-	if quantMax == 0x7FFFFFFF { // Unlimited max
-		if quantMin == 0 {
-			// * quantifier: split (skip ahead) -> atom -> goto (loop back)
-			// For greedy: REOP_split_goto_first tries skip first, then atom
-			splitOp := OpSplitGotoFirst
-			if !isGreedy {
-				splitOp = OpSplitNextFirst
-			}
-			// Insert split at lastAtomStart
-			bc[lastAtomStart] = byte(splitOp)
-			// Offset = atom_len + goto_size (jump past atom + goto to get to next pattern)
-			splitOffset := int32(atomLen + 5)
-			binary.LittleEndian.PutUint32(bc[lastAtomStart+1:], uint32(splitOffset))
+	// Emit split AFTER atom (only opcode once, then offset)
+	// Split offset = -(atomLen + 5) to jump back to atom start
+	s.emitOpU32(splitOp, uint32(-(atomLen+5)))
 
-			// Emit goto after atom that jumps back to lastAtomStart
-			// Store the raw target position (like QuickJS C does)
-			gotoTarget := int32(lastAtomStart)
-			s.emitGoto(OpGoto, gotoTarget)
-		} else if quantMin == 1 {
-			// + quantifier: emit goto to loop back
-			// For greedy: REOP_split_next_first - greedy (REOP_split_next_first for greedy)
-			splitOp := OpSplitNextFirst
-			if !isGreedy {
-				splitOp = OpSplitGotoFirst
-			}
-			// Emit goto that jumps back to lastAtomStart
-			gotoTarget := int32(lastAtomStart)
-			s.emitGoto(splitOp, gotoTarget)
-		}
-	} else if quantMax == 1 {
-		// ? quantifier: split (skip atom)
-		splitOp := OpSplitGotoFirst
-		if !isGreedy {
-			splitOp = OpSplitNextFirst
-		}
-		// Insert split at lastAtomStart
-		bc[lastAtomStart] = byte(splitOp)
-		// Offset = jump past atom to get to next pattern
-		splitOffset := int32(atomLen)
-		binary.LittleEndian.PutUint32(bc[lastAtomStart+1:], uint32(splitOffset))
-	}
+	// Emit goto to skip past quantifier (to save_end)
+	// save_end will be at current position + 2 (after goto opcode + offset)
+	// After pc+=4 at goto: pc = current + 4
+	// save_end will be at current + 5
+	// offset = (current + 5) - (current + 4) = 1
+	s.emitOpU32(OpGoto, uint32(1))
 
 	return 0
 }
@@ -1786,10 +1832,8 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 
 		case OpSplitGotoFirst, OpSplitNextFirst:
 			// Split opcodes are size 5 bytes: 1 byte opcode +4 byte signed offset
-			// Step 1: Read signed offset
 			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
 			pc += 4 // advance past operand (4 bytes, total size 5 - 1 opcode)
-			// Step 2: Calculate split target
 			splitPc := pc + int(offset)
 			if splitPc < 0 || splitPc > bytecodeLen {
 				goto backtrack
@@ -1812,10 +1856,8 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 
 		case OpGoto:
 			// OpGoto is size 5 bytes: 1 byte opcode + 4 byte signed offset
-			// Step 1: Read signed offset
 			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
 			pc += 4 // advance past operand (4 bytes, total size 5 - 1 opcode)
-			// Step 3: Apply offset
 			newPc := pc + int(offset)
 			if newPc < 0 || newPc > bytecodeLen {
 				return RetNoMatch
@@ -2024,6 +2066,7 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 		pc = frame.pc
 		*cptr = frame.cptr
 		bp = frame.bp
+		continue
 	}
 }
 
