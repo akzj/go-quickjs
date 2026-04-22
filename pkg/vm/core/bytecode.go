@@ -7,10 +7,11 @@ import (
 
 // Bytecode represents compiled JavaScript code
 type Bytecode struct {
-	Code    []byte           // instruction bytes
-	Pool    []value.JSValue  // constant pool
+	Code     []byte          // instruction bytes
+	Pool     []value.JSValue // constant pool
 	VarCount int            // number of local variables
-	ArgCount  int            // number of arguments
+	VarNames []string       // variable names (index -> name)
+	ArgCount int            // number of arguments
 }
 
 // FunctionDef represents a function definition
@@ -47,4 +48,12 @@ const (
 	OpGte         = opcode.OP_gte
 	OpStrictEq    = opcode.OP_strict_eq
 	OpStrictNeq   = opcode.OP_strict_neq
+	// Variables
+	OpGetVarUndef  = opcode.OP_get_var_undef
+	OpPutVar       = opcode.OP_put_var
+	OpPutVarInit   = opcode.OP_put_var_init
+	// Control Flow
+	OpGoto         = opcode.OP_goto
+	OpIfFalse      = opcode.OP_if_false
+	OpIfTrue       = opcode.OP_if_true
 )

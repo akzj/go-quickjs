@@ -179,6 +179,47 @@ func (vm *VM) executeOp(op opcode.Opcode) bool {
 		v := vm.peek()
 		vm.push(v)
 
+	// === Category 7: Variables ===
+	case opcode.OP_get_var_undef:
+		idx := opcode.ReadU16(vm.frame.Bytecode.Code, &vm.frame.PC)
+		// Look up variable by index
+		if int(idx) < len(vm.frame.Locals) {
+			vm.push(vm.frame.Locals[idx])
+		} else {
+			vm.push(value.Undefined())
+		}
+
+	case opcode.OP_put_var, opcode.OP_put_var_init:
+		idx := opcode.ReadU16(vm.frame.Bytecode.Code, &vm.frame.PC)
+		v := vm.pop()
+		// Set local variable by index
+		if idx >= uint16(len(vm.frame.Locals)) {
+			// Expand locals array
+			newLocals := make([]value.JSValue, idx+1)
+			copy(newLocals, vm.frame.Locals)
+			vm.frame.Locals = newLocals
+		}
+		vm.frame.Locals[idx] = v
+
+	// === Category 8: Control Flow ===
+	case opcode.OP_goto:
+		offset := opcode.ReadI32(vm.frame.Bytecode.Code, &vm.frame.PC)
+		vm.frame.PC += int(offset)
+
+	case opcode.OP_if_false:
+		offset := opcode.ReadI32(vm.frame.Bytecode.Code, &vm.frame.PC)
+		v := vm.pop()
+		if !value.ToBool(v) {
+			vm.frame.PC += int(offset)
+		}
+
+	case opcode.OP_if_true:
+		offset := opcode.ReadI32(vm.frame.Bytecode.Code, &vm.frame.PC)
+		v := vm.pop()
+		if value.ToBool(v) {
+			vm.frame.PC += int(offset)
+		}
+
 	case opcode.OP_return, opcode.OP_ret:
 		// For simple eval, just return
 		return false

@@ -44,6 +44,16 @@ const (
 	// === Category 6: Control Flow ===
 	OP_return        // return from function
 	OP_ret           // return with value (alias for return)
+
+	// === Category 7: Variables ===
+	OP_get_var_undef  // get variable (u16 index), return undefined if not found
+	OP_put_var        // set variable (u16 index), pop value
+	OP_put_var_init   // init variable (u16 index), pop value (let/const)
+
+	// === Category 8: Jump ===
+	OP_goto           // unconditional jump (5 bytes: opcode + 4 byte offset)
+	OP_if_false       // conditional jump (5 bytes: opcode + 4 byte offset)
+	OP_if_true        // conditional jump (5 bytes: opcode + 4 byte offset)
 )
 
 // OpcodeSize returns the total size in bytes for an opcode with its operands
@@ -57,8 +67,11 @@ func OpcodeSize(op Opcode) int {
 		OP_add, OP_sub, OP_mul, OP_div, OP_mod, OP_neg,
 		OP_eq, OP_neq, OP_lt, OP_lte, OP_gt, OP_gte,
 		OP_strict_eq, OP_strict_neq, OP_drop, OP_dup,
-		OP_return, OP_ret:
+		OP_return, OP_ret,
+		OP_get_var_undef, OP_put_var, OP_put_var_init:
 		return 1
+	case OP_goto, OP_if_false, OP_if_true:
+		return 5 // opcode + 4 byte offset
 	default:
 		return 1
 	}
@@ -80,6 +93,14 @@ func StackEffect(op Opcode) (pop, push int) {
 		return 1, 2
 	case OP_return, OP_ret:
 		return 0, 0 // May pop return value
+	case OP_get_var_undef:
+		return 0, 1 // Get variable, push value (or undefined)
+	case OP_put_var, OP_put_var_init:
+		return 1, 0 // Pop value, store it
+	case OP_goto:
+		return 0, 0 // No stack effect
+	case OP_if_false, OP_if_true:
+		return 1, 0 // Pop condition, no push
 	default:
 		return 0, 0
 	}
