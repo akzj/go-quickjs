@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/akzj/go-quickjs/pkg/compiler"
 	"github.com/akzj/go-quickjs/pkg/opcode"
 	"github.com/akzj/go-quickjs/pkg/value"
 )
@@ -25,6 +26,19 @@ type FunctionDef struct {
 // FunctionInfo stores information about a compiled function (used by VM)
 type FunctionInfo struct {
 	Bytecode *Bytecode
+}
+
+// FromCompiler converts a compiler.FunctionInfo to core.FunctionInfo
+func FromCompiler(cfi *compiler.FunctionInfo) *FunctionInfo {
+	return &FunctionInfo{
+		Bytecode: &Bytecode{
+			Code:     cfi.Bytecode.Code,
+			Pool:     cfi.Bytecode.Pool,
+			VarCount: cfi.Bytecode.VarCount,
+			VarNames: cfi.Bytecode.VarNames,
+			ArgCount: cfi.Bytecode.ArgCount,
+		},
+	}
 }
 
 // Opcode constants for this package (references opcode package)

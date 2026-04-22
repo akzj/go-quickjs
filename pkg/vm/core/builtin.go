@@ -20,9 +20,23 @@ func (ctx *JSContext) CompileAndRun(source string) value.JSValue {
 		return value.Undefined()
 	}
 	// Convert compiler.Bytecode to core.Bytecode for VM execution
+	// Convert Pool entries (compiler.FunctionInfo -> core.FunctionInfo)
+	pool := make([]value.JSValue, len(cb.Pool))
+	for i, v := range cb.Pool {
+		if fv, ok := v.(value.FunctionValue); ok {
+			info := fv.Info()
+			if cfi, ok := info.(*compiler.FunctionInfo); ok {
+				pool[i] = value.MakeFunction(FromCompiler(cfi))
+			} else {
+				pool[i] = v
+			}
+		} else {
+			pool[i] = v
+		}
+	}
 	bc := &Bytecode{
 		Code:     cb.Code,
-		Pool:     cb.Pool,
+		Pool:     pool,
 		VarCount: cb.VarCount,
 		VarNames: cb.VarNames,
 		ArgCount: cb.ArgCount,

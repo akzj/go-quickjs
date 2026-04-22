@@ -160,7 +160,8 @@ func (c *Compiler) parseFunction() {
 
 	// Register function as variable and store it
 	funcVarIdx := c.registerVar(funcName)
-	c.emitPushConst(uint32(funcIdx))
+	// Push function from constant pool using OP_push_func
+	c.emitU32(opcode.OP_push_func, uint32(funcIdx))
 	c.emitU16(opcode.OP_put_var, uint16(funcVarIdx))
 }
 
@@ -451,6 +452,13 @@ func (c *Compiler) emitPushI32(v int32) {
 
 func (c *Compiler) emitPushConst(v uint32) {
 	c.bc.Code = append(c.bc.Code, byte(opcode.OP_push_const))
+	c.bc.Code = append(c.bc.Code,
+		byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
+	)
+}
+
+func (c *Compiler) emitU32(op opcode.Opcode, v uint32) {
+	c.bc.Code = append(c.bc.Code, byte(op))
 	c.bc.Code = append(c.bc.Code,
 		byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
 	)
