@@ -1469,28 +1469,47 @@ func (s *parseState) parseQuantifier(lastAtomStart, lastCaptureCount int) int {
 		return 0
 	}
 
-	// C QuickJS structure: emit atom, then split (with negative offset), then goto, then save_end
-	// For greedy: OpSplitGotoFirst tries atom first (execute pc first, push splitPc)
-	// For non-greedy: OpSplitNextFirst skips atom first (execute splitPc first, push pc)
+	// C QuickJS structure: INSERT split at atom START, not append after atom
+	// has_goto: * and + need a goto after atom to loop back
+	// no goto: ? doesn't need goto - next instruction follows atom
+	hasGoto := (quantMax == 0x7FFFFFFF) // * and +
+
 	splitOp := OpSplitGotoFirst
 	if !isGreedy {
 		splitOp = OpSplitNextFirst
 	}
 
-	// Emit split AFTER atom (only opcode once, then offset)
-	// Split offset = -(atomLen + 4) to jump back to atom start
-	// After pc+=4 at split: pc = current + 4
-	// We want splitPc = lastAtomStart (atom start)
-	// offset = lastAtomStart - (current + 4) = -(current + 4 - lastAtomStart) = -(atomLen + 4)
-	fmt.Printf("DEBUG: parseQuantifier: lastAtomStart=%d, atomLen=%d, emitting offset=%d\n", lastAtomStart, atomLen, -(atomLen+4))
-	s.emitOpU32(splitOp, uint32(-(atomLen+4)))
+	// Insert split at lastAtomStart
+	// Split offset = atomLen [+ 5 if hasGoto] to jump past atom (+ goto if present)
+	insertLen := 5 // split opcode + offset
+	if hasGoto {
+		insertLen += 5 // add goto opcode + offset
+	}
 
-	// Emit goto to skip past quantifier (to save_end)
-	// save_end will be at current position + 2 (after goto opcode + offset)
-	// After pc+=4 at goto: pc = current + 4
-	// save_end will be at current + 5
-	// offset = (current + 5) - (current + 4) = 1
-	s.emitOpU32(OpGoto, uint32(1))
+	if s.byteCode.insert(lastAtomStart, insertLen) != 0 {
+		s.errorMsg = "out of memory"
+		return -1
+	}
+
+	// Calculate split offset
+	// offset = atomLen [+ 5 if hasGoto] to jump from split to next instruction
+	splitOffset := atomLen
+	if hasGoto {
+		splitOffset += 5 // add space for goto instruction
+	}
+
+	fmt.Printf("DEBUG: parseQuantifier: lastAtomStart=%d, atomLen=%d, hasGoto=%v, splitOffset=%d\n",
+		lastAtomStart, atomLen, hasGoto, splitOffset)
+	s.byteCode.buf[lastAtomStart] = byte(splitOp)
+	cutils.PutU32(s.byteCode.buf[lastAtomStart+1:], uint32(splitOffset))
+
+	// If hasGoto, emit goto after atom (which was pushed forward by insert)
+	if hasGoto {
+		gotoPos := lastAtomStart + 5 + atomLen
+		s.byteCode.buf[gotoPos] = byte(OpGoto)
+		// goto offset = -atomLen to jump back to atom start
+		cutils.PutU32(s.byteCode.buf[gotoPos+1:], uint32(-atomLen))
+	}
 
 	return 0
 }
@@ -1708,16 +1727,20 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 	bytecodeLen := len(fullBytecode)
 
 	for {
+		// DEBUG: log stack state
 		if sp >= len(ctx.stackBuf)-10 {
 			// Grow stack
+			fmt.Printf("DEBUG: Growing stack: sp=%d oldLen=%d\n", sp, len(ctx.stackBuf))
 			if ctx.stackBuf == nil || &ctx.stackBuf[0] == &ctx.staticStack[0] {
 				newStack := make([]stackFrame, ctx.stackSize*3/2)
 				copy(newStack, ctx.stackBuf)
 				ctx.stackBuf = newStack
+				fmt.Printf("DEBUG: Grew to len=%d\n", len(ctx.stackBuf))
 			} else {
 				newStack := make([]stackFrame, ctx.stackSize*3/2)
 				copy(newStack, ctx.stackBuf)
 				ctx.stackBuf = newStack
+				fmt.Printf("DEBUG: Grew to len=%d\n", len(ctx.stackBuf))
 			}
 		}
 
@@ -1836,11 +1859,17 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 
 		case OpSplitGotoFirst, OpSplitNextFirst:
 			// Split opcodes are size 5 bytes: 1 byte opcode +4 byte signed offset
-			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
-			pc += 4 // advance past operand (4 bytes, total size 5 - 1 opcode)
-			splitPc := pc + int(offset)
-			if splitPc < 0 || splitPc > bytecodeLen {
-				goto backtrack
+			// offset = target - endPc (relative to instruction END)
+			pc += 4 // advance past 4-byte offset operand
+			offset := int32(cutils.GetU32(fullBytecode[pc-4:pc]))
+			splitPc := pc + int(offset) // pc is now at instruction END
+			// DEBUG
+			if splitPc < 0 || splitPc >= bytecodeLen {
+				panic(fmt.Sprintf("split out of range: pc=%d offset=%d splitPc=%d bytecodeLen=%d", pc, offset, splitPc, bytecodeLen))
+			}
+			// DEBUG: check stack
+			if sp >= len(ctx.stackBuf) {
+				panic(fmt.Sprintf("stack overflow: sp=%d len=%d", sp, len(ctx.stackBuf)))
 			}
 			var pc1 int
 			if op == OpSplitNextFirst {
@@ -1860,11 +1889,13 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 
 		case OpGoto:
 			// OpGoto is size 5 bytes: 1 byte opcode + 4 byte signed offset
-			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
-			pc += 4 // advance past operand (4 bytes, total size 5 - 1 opcode)
-			newPc := pc + int(offset)
-			if newPc < 0 || newPc > bytecodeLen {
-				return RetNoMatch
+			// offset = target - endPc (target relative to instruction END)
+			pc += 4 // advance past 4-byte offset operand
+			offset := int32(cutils.GetU32(fullBytecode[pc-4:pc]))
+			newPc := pc + int(offset) // pc is now at instruction END
+			// DEBUG
+			if newPc < 0 || newPc >= bytecodeLen {
+				panic(fmt.Sprintf("goto out of range: pc=%d offset=%d newPc=%d bytecodeLen=%d", pc, offset, newPc, bytecodeLen))
 			}
 			pc = newPc
 
@@ -1963,12 +1994,10 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 
 		case OpLookahead, OpNegativeLookahead:
 			// Lookahead opcodes are size 5 bytes: 1 byte opcode +4 byte signed offset
-			offset := int32(cutils.GetU32(fullBytecode[pc:pc+4]))
-			pc +=4 // advance past operand
-
-			// Save state
-			targetPc := pc + int(offset)
-			if targetPc <0 || targetPc > bytecodeLen {
+			pc += 4 // advance past 4-byte offset operand
+			offset := int32(cutils.GetU32(fullBytecode[pc-4:pc]))
+			targetPc := pc + int(offset) // pc is now at instruction END
+			if targetPc < 0 || targetPc >= bytecodeLen {
 				goto backtrack
 			}
 			savedCptr := *cptr
@@ -2066,10 +2095,18 @@ func lreExecBacktrack(ctx *execContext, capture [][]byte, fullBytecode []byte, s
 			return RetNoMatch
 		}
 		sp--
+		// DEBUG
+		if sp < 0 || sp >= len(ctx.stackBuf) {
+			panic(fmt.Sprintf("backtrack stack underflow: sp=%d len=%d", sp, len(ctx.stackBuf)))
+		}
 		frame := ctx.stackBuf[sp]
 		pc = frame.pc
 		*cptr = frame.cptr
 		bp = frame.bp
+		// DEBUG
+		if pc < 0 || pc >= bytecodeLen {
+			panic(fmt.Sprintf("backtrack invalid pc: pc=%d bytecodeLen=%d", pc, bytecodeLen))
+		}
 		continue
 	}
 }
